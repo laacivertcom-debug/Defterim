@@ -50,7 +50,7 @@
   .row.clickable{cursor:pointer;}
   .row.clickable:active{background:var(--linefaint);}
   .btn{border:none; border-radius:5px; padding:11px 16px; font-size:14px; font-weight:600; color:#fff; background:var(--teal); display:inline-flex; align-items:center; gap:8px; cursor:pointer;}
-  .btn.dark{background:var(--navy);}
+  .btn.dark{background:var(--blue);}
   .btn.rust{background:var(--rust);}
   .btn.blue{background:var(--blue);}
   .btn.brass{background:var(--brass); color:var(--navy);}
@@ -92,6 +92,8 @@
   .lineitem{border:1.5px solid var(--line); border-radius:8px; padding:12px; margin-bottom:10px; background:#fff; position:relative;}
   .lineitem .top-row{display:flex; gap:8px; align-items:flex-end; margin-bottom:8px;}
   .mic-btn{width:38px; height:38px; border-radius:50%; border:none; background:var(--teal); color:#fff; display:flex; align-items:center; justify-content:center; flex-shrink:0; cursor:pointer;}
+  .btn-compact{padding:14px 10px !important; font-size:13.5px !important; gap:6px !important; line-height:1.25;}
+  .btn-compact svg{width:16px; height:16px; flex-shrink:0;}
   .mic-btn.listening{background:var(--rust); animation:pulse 1s infinite;}
   .mic-big{width:64px; height:64px; font-size:0;}
   .mic-big svg{width:28px; height:28px;}
@@ -119,6 +121,14 @@
 </style>
 </head>
 <body>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL = 'https://rxzfhkbgzcbudiknidyb.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_dmbxSVojZ4uKxdGDISuTYQ_V74mOYFN';
+const sb = (typeof supabase!=='undefined') ? supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+const FIRMA_ID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+</script>
+
 <header class="top" id="topheader"></header>
 <main id="app"></main>
 <nav class="bottom" id="bottomnav"></nav>
@@ -148,8 +158,20 @@ const NAV = [
   {id:'accounts', label:'Hesaplar', icon:'wallet'},
   {id:'allnotes', label:'Notlar', icon:'notes'},
 ];
-const uid = () => Math.random().toString(36).slice(2,10);
+const uid = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>{const r=Math.random()*16|0; return (c==='x'?r:(r&0x3|0x8)).toString(16);});
+function isValidUUID(str){ return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str||''); }
+function migrateCustomerIdsToUUID(){
+  let changed = false;
+  state.customers.forEach(c=>{
+    if(!isValidUUID(c.id)){
+      const oldId = c.id; const newId = uid(); c.id = newId; changed = true;
+      state.movements.forEach(m=>{ if(m.customerId===oldId) m.customerId=newId; });
+    }
+  });
+  if(changed) persist();
+}
 const tl = n => (Number(n)||0).toLocaleString('tr-TR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const round2 = n => Math.round((Number(n)||0)*100)/100;
 function parseAmount(raw){
   if(raw==null) return 0;
   let s = String(raw).trim();
@@ -187,8 +209,17 @@ function loadState(){
   s.pin = s.pin || null;
   s.trash = (s.trash||[]).filter(t=> (new Date(today())-new Date(t.deletedAt))/86400000 <= 30);
   s.suppliers = s.suppliers || [];
+  s.bankLoans = s.bankLoans || [];
+  s.bankLoanMovements = s.bankLoanMovements || [];
   s.supplierMovements = s.supplierMovements || [];
-  s.customers = (s.customers||[]).map(c=>({ id:c.id, name:c.name, phone:c.phone, note:c.note||'', image:c.image||null, address:c.address||'', tckn:c.tckn||'', taxId:c.taxId||'', taxOffice:c.taxOffice||'' }));
+  s.employees = (s.employees || []).map(e=>({ ...e, monthlySalary: e.monthlySalary||0, attendance: e.attendance||{} }));
+  s.employeeMovements = s.employeeMovements || [];
+  s.customers = (s.customers||[]).map(c=>({ id:c.id, name:c.name, phone:c.phone, note:c.note||'', image:c.image||null, address:c.address||'', tckn:c.tckn||'', taxId:c.taxId||'', taxOffice:c.taxOffice||'', pendingItems:(c.pendingItems||[]).map(i=>({id:i.id, name:i.name, qty:i.qty, unit:i.unit||'adet', delivered:i.delivered||false, deliveredDate:i.deliveredDate||null})), locationQuery:c.locationQuery||'', location:c.location||null, customerNo:c.customerNo||null, invoiceFree:c.invoiceFree||false }));
+  { let maxNo = 0;
+    s.customers.forEach(c=>{ if(c.customerNo) maxNo = Math.max(maxNo, c.customerNo); });
+    s.customers.forEach(c=>{ if(!c.customerNo){ maxNo += 1; c.customerNo = maxNo; } });
+    s.customerCounter = Math.max(s.customerCounter||0, maxNo);
+  }
   s.ledger = (s.ledger||[]).map(l=>({
     id:l.id, date:l.date, type:l.type, category:l.category||'Genel', desc:l.desc,
     baseAmount: l.baseAmount!=null? l.baseAmount : l.amount, kdvOn: l.kdvOn||false, kdvPct: l.kdvPct||VAT_DEFAULT,
@@ -197,9 +228,11 @@ function loadState(){
   return s;
 }
 let state = loadState();
+migrateCustomerIdsToUUID();
 let view = 'dashboard';
 let selectedCustomerId = null;
 let selectedSupplierId = null;
+let selectedEmployeeId = null;
 let customerSearchQuery = '';
 function onCustomerSearch(val){
   customerSearchQuery = val;
@@ -213,7 +246,13 @@ function startCustomerSearchVoice(){
   startVoiceGeneric(SR, (text)=>{ onCustomerSearch(text.trim()); }, 'mic-customer-search');
 }
 
-function persist(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){} }
+function persist(){
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); return true; }
+  catch(e){
+    alert('⚠️ KAYIT SAKLANAMADI! Telefonun depolama alanı dolu olabilir (genelde büyük fotoğraflar yüzünden). Lütfen hemen "Yedek İndir" ile mevcut verinizi indirin, ardından eski/gereksiz müşteri fotoğraflarını kaldırıp tekrar deneyin.');
+    return false;
+  }
+}
 
 // ---------- PIN güvenlik sistemi ----------
 let pendingPinSuccess = null;
@@ -300,6 +339,22 @@ function restoreTrash(trashId){
     (t.payload.movements||[]).forEach(m=> state.supplierMovements.push(m));
   }
   else if(t.type==='supplierMovement'){ state.supplierMovements.push(t.payload); }
+  else if(t.type==='customerReset'){
+    (t.payload.movements||[]).forEach(m=>{
+      state.movements.push(m);
+      if(m.type==='teslim' && m.items){ m.items.forEach(it=>{ if(it.productId){ const p=state.products.find(p=>p.id===it.productId); if(p&&p.stock!=null) p.stock=Math.max(0,p.stock-it.qty); } }); }
+    });
+  }
+  else if(t.type==='employee'){
+    state.employees.push(t.payload.employee);
+    (t.payload.movements||[]).forEach(m=> state.employeeMovements.push(m));
+  }
+  else if(t.type==='employeeMovement'){ state.employeeMovements.push(t.payload); }
+  else if(t.type==='bankLoan'){
+    state.bankLoans.push(t.payload.bankLoan);
+    (t.payload.movements||[]).forEach(m=> state.bankLoanMovements.push(m));
+  }
+  else if(t.type==='bankLoanMovement'){ state.bankLoanMovements.push(t.payload); }
   state.trash = state.trash.filter(x=>x.id!==trashId);
   persist(); render();
 }
@@ -310,6 +365,11 @@ function trashLabel(t){
   if(t.type==='movement') return `${t.payload.type==='teslim'?'Teslimat':'Ödeme'}: ${t.payload.desc||''} — ₺${tl(t.payload.total)}`;
   if(t.type==='supplier') return `Tedarikçi: ${t.payload.supplier.name}`;
   if(t.type==='supplierMovement') return `Tedarikçi ${t.payload.type==='borc'?'Borç':'Ödeme'}: ${t.payload.desc} — ₺${tl(t.payload.amount)}`;
+  if(t.type==='employee') return `Çalışan: ${t.payload.employee.name}`;
+  if(t.type==='employeeMovement') return `Çalışan ${t.payload.type==='borc'?'Hakediş':(t.payload.type==='kesinti'?'Kesinti':'Ödeme')}: ${t.payload.desc} — ₺${tl(t.payload.amount)}`;
+  if(t.type==='bankLoan') return `Banka: ${t.payload.bankLoan.name}`;
+  if(t.type==='bankLoanMovement') return `Banka ${t.payload.type==='borc'?'Kredi':'Ödeme'}: ${t.payload.desc} — ₺${tl(t.payload.amount)}`;
+  if(t.type==='customerReset') return `Hesap Sıfırlama: ${t.payload.customerName} (${(t.payload.movements||[]).length} hareket)`;
   return 'Kayıt';
 }
 
@@ -327,6 +387,87 @@ function customerOverdue(id){
   if(!overdue.length) return null;
   overdue.sort((a,b)=> a.dueDate.localeCompare(b.dueDate));
   return overdue[0].dueDate;
+}
+function shareCustomerStatement(id){
+  const c = state.customers.find(x=>x.id===id); if(!c) return;
+  const rows = customerMovements(id);
+  let running = 0;
+  const lines = [`${c.name} — Cari Hesap Özeti`, `Tarih: ${fmtDate(today())}`, ''];
+  if(!rows.length){ lines.push('Henüz hareket yok.'); }
+  else {
+    rows.forEach((m, idx)=>{
+      const prevRunning = running;
+      running += m.type==='teslim' ? m.total : -m.total;
+      if(m.type==='teslim' && m.items && m.items.length){
+        lines.push(`${fmtDate(m.date)}: Teslimat${m.invoiced?' (Fatura ✓)':''}`);
+        m.items.forEach(it=>{ lines.push(`   ${it.name}: ${it.qty} × ${tl(it.unitPrice)} = ${tl(it.lineTotal)}`); });
+        lines.push(`   Toplam: ${tl(m.total)}`);
+      } else {
+        const label = m.type==='teslim' ? (m.desc||'Teslimat') : (m.desc||'Ödeme');
+        lines.push(`${fmtDate(m.date)}: ${label} — ${tl(m.total)}`);
+      }
+      if(idx===0){ lines.push(`   = ${tl(running)}`); }
+      else { lines.push(`   ${tl(prevRunning)} ${m.type==='teslim'?'+':'−'} ${tl(m.total)} = ${tl(running)}`); }
+    });
+  }
+  const bal = customerBalance(id);
+  lines.push('');
+  lines.push(bal>0 ? `TOPLAM KALAN BORÇ: ${tl(bal)}` : (bal<0 ? `FAZLA ÖDEME: ${tl(Math.abs(bal))}` : 'HESAP KAPALI (borç yok)'));
+  const pendingActive = (c.pendingItems||[]).filter(i=>!i.delivered);
+  if(pendingActive.length){
+    lines.push('');
+    lines.push('TESLİM BEKLEYEN ÜRÜNLER:');
+    const unitTotals = {};
+    pendingActive.forEach(i=>{ lines.push(`   ${i.qty} ${i.unit} × ${i.name}`); unitTotals[i.unit] = (unitTotals[i.unit]||0) + i.qty; });
+    const totalsText = Object.keys(unitTotals).map(u=>`${unitTotals[u]} ${u}`).join(', ');
+    lines.push(`   Toplam: ${totalsText}`);
+  }
+  const deliveredToday = (c.pendingItems||[]).filter(i=>i.delivered && i.deliveredDate===today());
+  if(deliveredToday.length){
+    lines.push('');
+    lines.push(`BUGÜN TESLİM EDİLEN (${fmtDate(today())}):`);
+    const unitTotals2 = {};
+    deliveredToday.forEach(i=>{ lines.push(`   ${i.qty} ${i.unit} × ${i.name}`); unitTotals2[i.unit] = (unitTotals2[i.unit]||0) + i.qty; });
+    const totalsText2 = Object.keys(unitTotals2).map(u=>`${unitTotals2[u]} ${u}`).join(', ');
+    lines.push(`   Toplam: ${totalsText2}`);
+  }
+  const text = lines.join('\n');
+  if(navigator.share){ navigator.share({title: c.name+' — Cari Hesap', text}).catch(()=>{}); }
+  else if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>alert('Hesap özeti kopyalandı, WhatsApp veya başka bir yere yapıştırabilirsiniz.')).catch(()=>alert(text));
+  } else { alert(text); }
+}
+function resetCustomerAccount(id){
+  const c = state.customers.find(x=>x.id===id); if(!c) return;
+  requirePin(()=>{
+    const ms = state.movements.filter(m=>m.customerId===id);
+    if(!ms.length){ alert('Zaten hiç hareketi yok.'); return; }
+    ms.forEach(m=>revertStock(m));
+    trashAdd('customerReset', {customerId:id, customerName:c.name, movements:ms});
+    state.movements = state.movements.filter(m=>m.customerId!==id);
+    persist(); closeModal(); render();
+  });
+}
+function modalOpeningBalance(customerId){
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-head"><h3>Eski Bakiye Ekle</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          <p class="muted" style="margin-bottom:14px;">Sistem öncesinden kalan bir bakiyeyi buradan ekleyebilirsiniz.</p>
+          <label class="field"><span>Tutar (₺)</span><input id="f-openbal2" type="text" inputmode="decimal"></label>
+          <label class="field"><span>Tarih</span><input id="f-openbal2-date" type="date" value="${today()}"></label>
+          <button class="btn dark btn-full" onclick="submitOpeningBalance('${customerId}')">Kaydet</button>
+        </div>
+      </div>
+    </div>`);
+}
+function submitOpeningBalance(customerId){
+  const amount = parseAmount(document.getElementById('f-openbal2').value);
+  const date = document.getElementById('f-openbal2-date').value || today();
+  if(!amount || amount<=0) return;
+  state.movements.push({id:uid(), customerId, date, dueDate:null, invoiced:false, type:'teslim', items:[], total:amount, desc:'Devreden Bakiye (Eski Hesap)'});
+  persist(); closeModal(); render();
 }
 // ---------- tedarikçiler (bize mal veren firmalar, onlara olan borç) ----------
 function supplierMovementsOf(id){
@@ -377,13 +518,14 @@ function submitSupplierModal(){
 }
 function modalSupplierMovement(supplierId, type){
   const isB = type==='borc';
+  const suggestedDesc = isB ? `${state.supplierMovements.filter(m=>m.supplierId===supplierId && m.type==='borc').length + 1}. Sevkiyat` : '';
   openModal(`
     <div class="modal-bg" onclick="if(event.target===this)closeModal()">
       <div class="modal">
-        <div class="modal-head"><h3>${isB?'Mal / Borç Ekle':'Ödeme Yaptım'}</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-head"><h3>${isB?'Mal Girişi Ekle':'Ödeme Yaptım'}</h3><button onclick="closeModal()">&times;</button></div>
         <div class="modal-body">
           <label class="field"><span>Tarih</span><input id="f-sdate" type="date" value="${today()}"></label>
-          <label class="field"><span>Açıklama</span><input id="f-sdesc" placeholder="${isB?'Örn. Aylık mal alımı':'Örn. Havale, nakit'}"></label>
+          <label class="field"><span>Açıklama</span><input id="f-sdesc" value="${suggestedDesc}" placeholder="${isB?'Örn. 12. Sevkiyat':'Örn. Havale, nakit'}"></label>
           <label class="field"><span>Tutar (₺)</span><input id="f-samount" type="text" inputmode="decimal"></label>
           <button class="btn dark btn-full" onclick="submitSupplierMovement('${supplierId}','${type}')">Kaydet</button>
         </div>
@@ -432,6 +574,352 @@ function removeSupplierMovement(id){
 }
 function openSupplier(id){ view='supplierDetail'; selectedSupplierId=id; render(); }
 function backToSuppliers(){ view='suppliers'; selectedSupplierId=null; render(); }
+let selectedBankLoanId = null;
+function bankLoanMovementsOf(id){
+  return state.bankLoanMovements.filter(m=>m.bankLoanId===id).sort((a,b)=> new Date(a.date)-new Date(b.date) || a.id.localeCompare(b.id));
+}
+function bankLoanBalance(id){
+  const ms = state.bankLoanMovements.filter(m=>m.bankLoanId===id);
+  const borc = ms.filter(m=>m.type==='borc').reduce((a,m)=>a+m.amount,0);
+  const odendi = ms.filter(m=>m.type==='odeme').reduce((a,m)=>a+m.amount,0);
+  return borc-odendi;
+}
+function addBankLoan(name){ const b={id:uid(), name, note:''}; state.bankLoans.push(b); persist(); return b; }
+function removeBankLoan(id){
+  const b = state.bankLoans.find(x=>x.id===id); if(!b) return;
+  requirePin(()=>{
+    const ms = state.bankLoanMovements.filter(m=>m.bankLoanId===id);
+    trashAdd('bankLoan', {bankLoan:b, movements:ms});
+    state.bankLoans = state.bankLoans.filter(x=>x.id!==id);
+    state.bankLoanMovements = state.bankLoanMovements.filter(m=>m.bankLoanId!==id);
+    persist(); closeModal(); render();
+  });
+}
+let editingBankLoanId = null;
+function modalBankLoan(editId){
+  editingBankLoanId = editId || null;
+  const b = editId ? state.bankLoans.find(x=>x.id===editId) : null;
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-head"><h3>${b?'Krediyi Düzenle':'Yeni Banka/Kredi'}</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          <label class="field"><span>Banka Adı</span><input id="f-bname" value="${b?b.name:''}"></label>
+          <button class="btn dark btn-full" onclick="submitBankLoanModal()">Kaydet</button>
+          ${b?`<button class="btn ghost btn-full" style="margin-top:10px;color:var(--rust);border-color:var(--rust);" onclick="removeBankLoan('${b.id}')">${ICONS.trash} Sil</button>`:''}
+        </div>
+      </div>
+    </div>`);
+}
+function submitBankLoanModal(){
+  const name = document.getElementById('f-bname').value.trim();
+  if(!name) return;
+  if(editingBankLoanId){ const b=state.bankLoans.find(x=>x.id===editingBankLoanId); if(b){ b.name=name; } }
+  else { addBankLoan(name); }
+  editingBankLoanId = null;
+  persist(); closeModal(); render();
+}
+function modalBankLoanMovement(bankLoanId, type){
+  const isB = type==='borc';
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-head"><h3>${isB?'Kredi/Borç Ekle':'Ödeme Yaptım'}</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          <label class="field"><span>Tarih</span><input id="f-bdate" type="date" value="${today()}"></label>
+          <label class="field"><span>Açıklama</span><input id="f-bdesc" placeholder="${isB?'Örn. Yeni kredi çekimi':'Örn. Taksit ödemesi'}"></label>
+          <label class="field"><span>Tutar (₺)</span><input id="f-bamount" type="text" inputmode="decimal"></label>
+          <button class="btn dark btn-full" onclick="submitBankLoanMovement('${bankLoanId}','${type}')">Kaydet</button>
+        </div>
+      </div>
+    </div>`);
+}
+function submitBankLoanMovement(bankLoanId, type){
+  const date = document.getElementById('f-bdate').value || today();
+  const desc = document.getElementById('f-bdesc').value.trim() || (type==='borc'?'Kredi':'Ödeme');
+  const amount = parseAmount(document.getElementById('f-bamount').value);
+  if(!amount || amount<=0) return;
+  state.bankLoanMovements.push({id:uid(), bankLoanId, date, type, desc, amount});
+  persist(); closeModal(); render();
+}
+function editBankLoanMovement(id, bankLoanId){
+  const m = state.bankLoanMovements.find(x=>x.id===id); if(!m) return;
+  requirePin(()=>{
+    openModal(`
+      <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+        <div class="modal">
+          <div class="modal-head"><h3>Kaydı Düzenle</h3><button onclick="closeModal()">&times;</button></div>
+          <div class="modal-body">
+            <label class="field"><span>Tarih</span><input id="f-bdate" type="date" value="${m.date}"></label>
+            <label class="field"><span>Açıklama</span><input id="f-bdesc" value="${m.desc}"></label>
+            <label class="field"><span>Tutar (₺)</span><input id="f-bamount" type="text" inputmode="decimal" value="${m.amount}"></label>
+            <button class="btn dark btn-full" onclick="submitBankLoanMovementEdit('${id}')">Kaydet</button>
+          </div>
+        </div>
+      </div>`);
+  });
+}
+function submitBankLoanMovementEdit(id){
+  const m = state.bankLoanMovements.find(x=>x.id===id); if(!m) return;
+  m.date = document.getElementById('f-bdate').value || m.date;
+  m.desc = document.getElementById('f-bdesc').value.trim() || m.desc;
+  m.amount = parseAmount(document.getElementById('f-bamount').value);
+  persist(); closeModal(); render();
+}
+function removeBankLoanMovement(id){
+  const m = state.bankLoanMovements.find(x=>x.id===id); if(!m) return;
+  requirePin(()=>{
+    trashAdd('bankLoanMovement', m);
+    state.bankLoanMovements = state.bankLoanMovements.filter(x=>x.id!==id);
+    persist(); closeModal(); render();
+  });
+}
+function openBankLoan(id){ view='bankLoanDetail'; selectedBankLoanId=id; render(); }
+function backToBankLoans(){ view='bankLoans'; selectedBankLoanId=null; render(); }
+function shareSupplierStatement(id){
+  const s = state.suppliers.find(x=>x.id===id); if(!s) return;
+  const rows = supplierMovementsOf(id);
+  let running = 0;
+  const lines = [`${s.name} — Tedarikçi Hesap Özeti`, `Tarih: ${fmtDate(today())}`, ''];
+  if(!rows.length){ lines.push('Henüz hareket yok.'); }
+  else {
+    rows.forEach((m, idx)=>{
+      const prevRunning = running;
+      running += m.type==='borc' ? m.amount : -m.amount;
+      const label = m.type==='borc' ? (m.desc||'Mal/Borç') : (m.desc||'Ödeme');
+      lines.push(`${fmtDate(m.date)}: ${label} — ${tl(m.amount)}`);
+      if(idx===0){ lines.push(`   = ${tl(running)}`); }
+      else { lines.push(`   ${tl(prevRunning)} ${m.type==='borc'?'+':'−'} ${tl(m.amount)} = ${tl(running)}`); }
+    });
+  }
+  const bal = supplierBalance(id);
+  lines.push('');
+  lines.push(bal>0 ? `ONLARA KALAN BORCUMUZ: ${tl(bal)}` : (bal<0 ? `FAZLA ÖDEDİĞİMİZ: ${tl(Math.abs(bal))}` : 'HESAP KAPALI (borç yok)'));
+  const text = lines.join('\n');
+  if(navigator.share){ navigator.share({title: s.name+' — Tedarikçi Hesabı', text}).catch(()=>{}); }
+  else if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>alert('Hesap özeti kopyalandı.')).catch(()=>alert(text));
+  } else { alert(text); }
+}
+
+// ---------- çalışanlar ----------
+function employeeMovementsOf(id){
+  return state.employeeMovements.filter(m=>m.employeeId===id).sort((a,b)=> new Date(a.date)-new Date(b.date) || a.id.localeCompare(b.id));
+}
+function monthsElapsedSince(startDate){
+  const start = new Date(startDate); const now = new Date(today());
+  let months = (now.getFullYear()-start.getFullYear())*12 + (now.getMonth()-start.getMonth()) + 1;
+  return Math.max(0, months);
+}
+function employeeAutoAccrued(e){
+  if(!e || !e.monthlySalary) return 0;
+  return monthsElapsedSince(e.startDate) * e.monthlySalary;
+}
+function employeeManualHakedis(id){
+  return state.employeeMovements.filter(m=>m.employeeId===id && m.type==='borc').reduce((a,m)=>a+m.amount,0);
+}
+function employeeTotalPaid(id){
+  return state.employeeMovements.filter(m=>m.employeeId===id && m.type==='odeme').reduce((a,m)=>a+m.amount,0);
+}
+function employeeTotalDeductions(id){
+  return state.employeeMovements.filter(m=>m.employeeId===id && m.type==='kesinti').reduce((a,m)=>a+m.amount,0);
+}
+function employeeAttendanceDeduction(e){
+  if(!e || !e.monthlySalary) return 0;
+  const daily = round2(e.monthlySalary/30);
+  return round2(daily * employeeAbsentDaysCount(e));
+}
+function employeeBalance(id){
+  const e = state.employees.find(x=>x.id===id);
+  const auto = employeeAutoAccrued(e);
+  const manualHakedis = employeeManualHakedis(id);
+  const odendi = employeeTotalPaid(id);
+  const kesinti = employeeTotalDeductions(id);
+  const devamsizlik = employeeAttendanceDeduction(e);
+  return auto + manualHakedis - odendi - kesinti - devamsizlik;
+}
+function addEmployee(name, phone, startDate, monthlySalary){ const e={id:uid(), name, phone, startDate, monthlySalary:monthlySalary||0, attendance:{}, note:''}; state.employees.push(e); persist(); return e; }
+function removeEmployee(id){
+  const e = state.employees.find(x=>x.id===id); if(!e) return;
+  requirePin(()=>{
+    const ms = state.employeeMovements.filter(m=>m.employeeId===id);
+    trashAdd('employee', {employee:e, movements:ms});
+    state.employees = state.employees.filter(x=>x.id!==id);
+    state.employeeMovements = state.employeeMovements.filter(m=>m.employeeId!==id);
+    persist(); closeModal(); render();
+  });
+}
+let editingEmployeeId = null;
+function modalEmployee(editId){
+  editingEmployeeId = editId || null;
+  const e = editId ? state.employees.find(x=>x.id===editId) : null;
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-head"><h3>${e?'Çalışanı Düzenle':'Yeni Çalışan'}</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          <label class="field"><span>Ad Soyad</span><input id="f-ename" value="${e?e.name:''}"></label>
+          <label class="field"><span>Telefon (opsiyonel)</span><input id="f-ephone" value="${e?e.phone||'':''}"></label>
+          <label class="field"><span>İşe Başlama Tarihi</span><input id="f-estart" type="date" value="${e&&e.startDate?e.startDate:today()}"></label>
+          <label class="field"><span>Aylık Maaş (₺, opsiyonel — girilirse otomatik hakediş hesaplanır)</span><input id="f-esalary" type="text" inputmode="decimal" value="${e&&e.monthlySalary?e.monthlySalary:''}"></label>
+          <button class="btn dark btn-full" onclick="submitEmployeeModal()">Kaydet</button>
+          ${e?`<button class="btn ghost btn-full" style="margin-top:10px;color:var(--rust);border-color:var(--rust);" onclick="removeEmployee('${e.id}')">${ICONS.trash} Çalışanı Sil</button>`:''}
+        </div>
+      </div>
+    </div>`);
+}
+function submitEmployeeModal(){
+  const name = document.getElementById('f-ename').value.trim();
+  const phone = document.getElementById('f-ephone').value.trim();
+  const startDate = document.getElementById('f-estart').value || today();
+  const monthlySalary = parseAmount(document.getElementById('f-esalary').value);
+  if(!name) return;
+  if(editingEmployeeId){ const e=state.employees.find(x=>x.id===editingEmployeeId); if(e){ e.name=name; e.phone=phone; e.startDate=startDate; e.monthlySalary=monthlySalary; } }
+  else { addEmployee(name, phone, startDate, monthlySalary); }
+  editingEmployeeId = null;
+  persist(); closeModal(); render();
+}
+function modalEmployeeMovement(employeeId, type){
+  const isB = type==='borc';
+  const emp = state.employees.find(x=>x.id===employeeId);
+  const hasSalary = emp && emp.monthlySalary;
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-head"><h3>${isB?(hasSalary?'Ek Hakediş / Mesai Ekle':'Hakediş / Maaş Ekle'):'Ödeme Yaptım'}</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          <label class="field"><span>Tarih</span><input id="f-edate" type="date" value="${today()}"></label>
+          <label class="field"><span>Açıklama</span><input id="f-edesc" placeholder="${isB?(hasSalary?'Örn. İkramiye, fazla mesai':'Örn. Temmuz maaşı'):'Örn. Avans, elden ödeme'}"></label>
+          <label class="field"><span>Tutar (₺)</span><input id="f-eamount" type="text" inputmode="decimal"></label>
+          <button class="btn dark btn-full" onclick="submitEmployeeMovement('${employeeId}','${type}')">Kaydet</button>
+        </div>
+      </div>
+    </div>`);
+}
+function submitEmployeeMovement(employeeId, type){
+  const date = document.getElementById('f-edate').value || today();
+  const desc = document.getElementById('f-edesc').value.trim() || (type==='borc'?'Hakediş':'Ödeme');
+  const amount = parseAmount(document.getElementById('f-eamount').value);
+  if(!amount || amount<=0) return;
+  state.employeeMovements.push({id:uid(), employeeId, date, type, desc, amount});
+  persist(); closeModal(); render();
+}
+function employeeAbsentDaysCount(e){
+  return Object.keys(e.attendance||{}).filter(d=>e.attendance[d]).length;
+}
+function toggleAttendanceDay(employeeId, dateStr){
+  requirePin(()=>{
+    const e = state.employees.find(x=>x.id===employeeId); if(!e) return;
+    e.attendance = e.attendance || {};
+    if(e.attendance[dateStr]) delete e.attendance[dateStr]; else e.attendance[dateStr] = true;
+    persist(); render();
+  });
+}
+function renderAttendanceCalendar(e){
+  const now = new Date(today());
+  const year = now.getFullYear(), month = now.getMonth();
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const monthNames = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+  let cells = '';
+  for(let d=1; d<=daysInMonth; d++){
+    const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const absent = e.attendance && e.attendance[dateStr];
+    cells += `<button onclick="toggleAttendanceDay('${e.id}','${dateStr}')" style="aspect-ratio:1;border-radius:5px;border:${absent?'2px solid var(--rust)':'1.5px solid var(--line)'};background:${absent?'#fdecec':'#fff'};display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;cursor:pointer;">
+      <span style="font-weight:700;font-size:12px;color:var(--navy);">${d}</span>
+      ${absent?'<span style="color:var(--rust);font-weight:800;font-size:9px;line-height:1;">✕</span>':''}
+    </button>`;
+  }
+  const absentCount = employeeAbsentDaysCount(e);
+  const daily = e.monthlySalary ? round2(e.monthlySalary/30) : 0;
+  return `<div class="card" style="padding:16px;margin-bottom:14px;">
+    <h2 class="serif" style="font-size:15px;margin:0 0 10px;">📅 Puantaj Takvimi — ${monthNames[month]} ${year}</h2>
+    <p class="muted" style="font-size:12px;margin:0 0 10px;">Gelmediği güne dokunun (kırmızı ✕ olur), tekrar dokunursanız geri alınır — her işlem PIN ister.</p>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:10px;">${cells}</div>
+    <div class="muted" style="font-size:12.5px;font-weight:700;">${e.monthlySalary?`Bu ay devamsız: ${absentCount} gün — Kesinti: ₺${tl(round2(daily*absentCount))}`:`Devamsız: ${absentCount} gün (kesinti için Aylık Maaş girilmeli)`}</div>
+  </div>`;
+}
+function editEmployeeMovement(id, employeeId){
+  const m = state.employeeMovements.find(x=>x.id===id); if(!m) return;
+  requirePin(()=>{
+    openModal(`
+      <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+        <div class="modal">
+          <div class="modal-head"><h3>Kaydı Düzenle</h3><button onclick="closeModal()">&times;</button></div>
+          <div class="modal-body">
+            <label class="field"><span>Tarih</span><input id="f-edate" type="date" value="${m.date}"></label>
+            <label class="field"><span>Açıklama</span><input id="f-edesc" value="${m.desc}"></label>
+            <label class="field"><span>Tutar (₺)</span><input id="f-eamount" type="text" inputmode="decimal" value="${m.amount}"></label>
+            <button class="btn dark btn-full" onclick="submitEmployeeMovementEdit('${id}')">Kaydet</button>
+          </div>
+        </div>
+      </div>`);
+  });
+}
+function submitEmployeeMovementEdit(id){
+  const m = state.employeeMovements.find(x=>x.id===id); if(!m) return;
+  m.date = document.getElementById('f-edate').value || m.date;
+  m.desc = document.getElementById('f-edesc').value.trim() || m.desc;
+  m.amount = parseAmount(document.getElementById('f-eamount').value);
+  persist(); closeModal(); render();
+}
+function removeEmployeeMovement(id){
+  const m = state.employeeMovements.find(x=>x.id===id); if(!m) return;
+  requirePin(()=>{
+    trashAdd('employeeMovement', m);
+    state.employeeMovements = state.employeeMovements.filter(x=>x.id!==id);
+    persist(); closeModal(); render();
+  });
+}
+function shareEmployeeStatement(id){
+  const e = state.employees.find(x=>x.id===id); if(!e) return;
+  const rows = employeeMovementsOf(id);
+  const autoAccrued = employeeAutoAccrued(e);
+  let running = autoAccrued;
+  const lines = [`${e.name} — Çalışan Hesap Özeti`, `İşe Başlama: ${fmtDate(e.startDate)}`, `Tarih: ${fmtDate(today())}`, ''];
+  if(e.monthlySalary){ lines.push(`Aylık Maaş: ${tl(e.monthlySalary)} — Otomatik Hakediş (${monthsElapsedSince(e.startDate)} ay): ${tl(autoAccrued)}`); lines.push(''); }
+  if(!rows.length){ lines.push('Henüz hareket yok.'); }
+  else {
+    rows.forEach(m=>{
+      const prevRunning = running;
+      running += m.type==='borc' ? m.amount : -m.amount;
+      const label = m.type==='borc' ? (m.desc||'Hakediş') : (m.desc||'Ödeme');
+      lines.push(`${fmtDate(m.date)}: ${label} — ${tl(m.amount)}`);
+      lines.push(`   ${tl(prevRunning)} ${m.type==='borc'?'+':'−'} ${tl(m.amount)} = ${tl(running)}`);
+    });
+  }
+  const bal = employeeBalance(id);
+  lines.push('');
+  lines.push(bal>0 ? `KALAN ALACAĞI: ${tl(bal)}` : (bal<0 ? `FAZLA ÖDENEN: ${tl(Math.abs(bal))}` : 'HESAP KAPALI'));
+  const text = lines.join('\n');
+  if(navigator.share){ navigator.share({title: e.name+' — Çalışan Hesabı', text}).catch(()=>{}); }
+  else if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>alert('Hesap özeti kopyalandı.')).catch(()=>alert(text));
+  } else { alert(text); }
+}
+function shareGeneralStatement(){
+  const totalDeliveries = state.movements.filter(m=>m.type==='teslim').reduce((a,m)=>a+m.total,0);
+  const totalPaymentsIn = state.movements.filter(m=>m.type==='odeme').reduce((a,m)=>a+m.total,0);
+  const manualExpense = state.ledger.filter(l=>l.type==='gider').reduce((a,l)=>a+l.amount,0);
+  const supplierPaidTotal = state.supplierMovements.filter(m=>m.type==='odeme').reduce((a,m)=>a+m.amount,0);
+  const employeePaidTotal = state.employeeMovements.filter(m=>m.type==='odeme').reduce((a,m)=>a+m.amount,0);
+  const netExpenseTotal = manualExpense + supplierPaidTotal + employeePaidTotal;
+  const lines = [
+    'Genel İşletme Özeti',
+    `Tarih: ${fmtDate(today())}`,
+    '',
+    `Net Ciro: ${tl(totalDeliveries)}`,
+    `Net Gider: ${tl(netExpenseTotal)}`,
+    `  (Genel gider: ${tl(manualExpense)}, Tedarikçi ödemesi: ${tl(supplierPaidTotal)}, Çalışan ödemesi: ${tl(employeePaidTotal)})`,
+    `Gelen Ödeme: ${tl(totalPaymentsIn)}`
+  ];
+  const text = lines.join('\n');
+  if(navigator.share){ navigator.share({title:'Genel İşletme Özeti', text}).catch(()=>{}); }
+  else if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>alert('Özet kopyalandı.')).catch(()=>alert(text));
+  } else { alert(text); }
+}
+function openEmployee(id){ view='employeeDetail'; selectedEmployeeId=id; render(); }
+function backToEmployees(){ view='employees'; selectedEmployeeId=null; render(); }
 function upcomingPaymentsList(){
   const list=[];
   state.customers.forEach(c=>{
@@ -548,7 +1036,59 @@ function startVoice(rowId){
 }
 
 // ---------- customer actions ----------
-function addCustomer(name, phone){ const c={id:uid(), name, phone, note:'', image:null, address:'', taxId:'', taxOffice:''}; state.customers.push(c); persist(); return c; }
+function addCustomer(name, phone){
+  state.customerCounter = (state.customerCounter||0) + 1;
+  const c={id:uid(), name, phone, note:'', image:null, address:'', taxId:'', taxOffice:'', pendingItems:[], locationQuery:'', location:null, customerNo:state.customerCounter, invoiceFree:false};
+  state.customers.push(c); persist(); return c;
+}
+function turkishNormalize(s){
+  return (s||'').replace(/İ/g,'i').replace(/I/g,'ı').toLowerCase()
+    .replace(/ü/g,'u').replace(/ö/g,'o').replace(/ç/g,'c').replace(/ş/g,'s').replace(/ğ/g,'g').replace(/ı/g,'i');
+}
+const GENERIC_NAME_WORDS = new Set(['petshop','pet','shop','bey','hanim','hanım','cadde','sokak','mahalle','mahallesi','market','magaza','mağaza','ticaret','isletme','işletme','firma','firması','ve','ile','the'].map(w=>turkishNormalize(w)));
+function jsCustomerToRow(c){
+  return {
+    id: c.id, firma_id: FIRMA_ID, musteri_no: c.customerNo||null, ad: c.name, telefon: c.phone||null,
+    adres: c.address||null, tckn: c.tckn||null, vergi_no: c.taxId||null, vergi_dairesi: c.taxOffice||null,
+    note: c.note||null, konum: c.location?JSON.stringify(c.location):null, konum_sorgu: c.locationQuery||null,
+    bekleyen_urunler: c.pendingItems||[], image: c.image||null, invoice_free: !!c.invoiceFree
+  };
+}
+async function sbUpsertCustomer(c){
+  if(!sb) return;
+  try{
+    const { error } = await sb.from('musteriler').upsert(jsCustomerToRow(c));
+    if(error) console.error('Bulut kaydı hatası (musteriler):', error.message);
+  }catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+async function sbDeleteCustomer(id){
+  if(!sb) return;
+  try{
+    const { error } = await sb.from('musteriler').delete().eq('id', id);
+    if(error) console.error('Bulut silme hatası (musteriler):', error.message);
+  }catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+async function uploadAllCustomersToCloud(){
+  if(!sb){ alert('Bulut bağlantısı kurulamadı.'); return; }
+  if(state.customers.length===0){ alert('Yüklenecek müşteri yok.'); return; }
+  const rows = state.customers.map(jsCustomerToRow);
+  const { error } = await sb.from('musteriler').upsert(rows);
+  if(error){ alert('❌ Yükleme başarısız: ' + error.message); }
+  else{ alert(`✅ ${rows.length} müşteri buluta yüklendi.`); }
+}
+function findDuplicateCustomer(name, phone){
+  const nameLower = (name||'').trim().toLowerCase();
+  const phoneNorm = (phone||'').replace(/\s+/g,'');
+  const exact = state.customers.find(c => (c.name||'').trim().toLowerCase()===nameLower || (phoneNorm && c.phone && c.phone.replace(/\s+/g,'')===phoneNorm));
+  if(exact) return exact;
+  const newWords = turkishNormalize(name).split(/\s+/).filter(w=>w.length>=3 && !GENERIC_NAME_WORDS.has(w));
+  if(newWords.length < 2) return null;
+  return state.customers.find(c=>{
+    const existingWords = turkishNormalize(c.name).split(/\s+/).filter(w=>w.length>=3 && !GENERIC_NAME_WORDS.has(w));
+    const common = newWords.filter(w=>existingWords.includes(w));
+    return common.length >= 2;
+  }) || null;
+}
 function removeCustomer(id){
   const c=state.customers.find(x=>x.id===id); if(!c) return;
   requirePin(()=>{
@@ -557,20 +1097,230 @@ function removeCustomer(id){
     state.customers = state.customers.filter(c=>c.id!==id);
     state.movements = state.movements.filter(m=>m.customerId!==id);
     persist(); render();
+    sbDeleteCustomer(id);
   });
 }
+function modalCustomerNote(id){
+  const c = state.customers.find(x=>x.id===id); if(!c) return;
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:600px;">
+        <div class="modal-head"><h3>Not — ${c.name}</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          <textarea id="note-text-full" placeholder="Bu müşteriyle ilgili hatırlamak istediklerinizi yazın…" style="width:100%;box-sizing:border-box;min-height:260px;font-size:15.5px;line-height:1.6;border:1.5px solid var(--line);border-radius:5px;padding:10px 11px;font-family:inherit;">${c.note||''}</textarea>
+          <div style="display:flex; align-items:center; gap:10px; margin-top:12px;">
+            <button class="btn dark" style="flex:1;" onclick="saveCustomerNote('${id}')">Kaydet</button>
+            ${c.note?`<button class="btn ghost" style="color:var(--rust);border-color:var(--rust);" onclick="deleteCustomerNote('${id}')">Notu Sil</button>`:''}
+          </div>
+        </div>
+      </div>
+    </div>`);
+  setTimeout(()=>document.getElementById('note-text-full')?.focus(),80);
+}
 function saveCustomerNote(id){
-  const val = document.getElementById('note-text').value;
+  const val = document.getElementById('note-text-full').value;
   const c = state.customers.find(c=>c.id===id); if(c){ c.note = val; persist(); }
-  const status = document.getElementById('note-status'); if(status){ status.textContent = 'Kaydedildi'; setTimeout(()=>{ if(status) status.textContent=''; },1400); }
+  closeModal(); render();
+}
+function deleteCustomerNote(id){
+  if(!confirm('Bu not silinsin mi?')) return;
+  const c = state.customers.find(c=>c.id===id); if(c){ c.note = ''; persist(); }
+  closeModal(); render();
+}
+function modalEmployeeNote(id){
+  const e = state.employees.find(x=>x.id===id); if(!e) return;
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:600px;">
+        <div class="modal-head"><h3>Not — ${e.name}</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          <textarea id="enote-text-full" placeholder="Devamsızlık, sorun, hatırlatma vb. yazın…" style="width:100%;box-sizing:border-box;min-height:260px;font-size:15.5px;line-height:1.6;border:1.5px solid var(--line);border-radius:5px;padding:10px 11px;font-family:inherit;">${e.note||''}</textarea>
+          <div style="display:flex; align-items:center; gap:10px; margin-top:12px;">
+            <button class="btn dark" style="flex:1;" onclick="saveEmployeeNote('${id}')">Kaydet</button>
+            ${e.note?`<button class="btn ghost" style="color:var(--rust);border-color:var(--rust);" onclick="deleteEmployeeNote('${id}')">Notu Sil</button>`:''}
+          </div>
+        </div>
+      </div>
+    </div>`);
+  setTimeout(()=>document.getElementById('enote-text-full')?.focus(),80);
+}
+function saveEmployeeNote(id){
+  const val = document.getElementById('enote-text-full').value;
+  const e = state.employees.find(x=>x.id===id); if(e){ e.note = val; persist(); }
+  closeModal(); render();
+}
+function deleteEmployeeNote(id){
+  if(!confirm('Bu not silinsin mi?')) return;
+  const e = state.employees.find(x=>x.id===id); if(e){ e.note = ''; persist(); }
+  closeModal(); render();
+}
+function modalAddPendingItem(customerId){
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-head"><h3>Teslim Edilmeyen Ürün Ekle</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          <label class="field"><span>Ürün Adı</span><input id="f-pend-name"></label>
+          <div style="display:flex;gap:8px;">
+            <label class="field" style="flex:1;"><span>Miktar</span><input id="f-pend-qty" type="number" value="1"></label>
+            <label class="field" style="flex:1;"><span>Birim (adet, kg, litre…)</span><input id="f-pend-unit" value="adet"></label>
+          </div>
+          <button class="btn dark btn-full" onclick="submitPendingItem('${customerId}')">Kaydet</button>
+        </div>
+      </div>
+    </div>`);
+}
+function submitPendingItem(customerId){
+  const name = document.getElementById('f-pend-name').value.trim();
+  const qty = Number(document.getElementById('f-pend-qty').value);
+  const unit = document.getElementById('f-pend-unit').value.trim() || 'adet';
+  if(!name || !qty) return;
+  const c = state.customers.find(x=>x.id===customerId); if(!c) return;
+  c.pendingItems = c.pendingItems || [];
+  c.pendingItems.push({id:uid(), name, qty, unit, delivered:false});
+  persist(); closeModal(); render();
+}
+function modalEditPendingItem(customerId, itemId){
+  const c = state.customers.find(x=>x.id===customerId); if(!c) return;
+  const item = (c.pendingItems||[]).find(i=>i.id===itemId); if(!item) return;
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-head"><h3>Bekleyen Ürünü Düzenle</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          <label class="field"><span>Ürün Adı</span><input id="f-pend-name-edit" value="${item.name}"></label>
+          <div style="display:flex;gap:8px;">
+            <label class="field" style="flex:1;"><span>Miktar</span><input id="f-pend-qty-edit" type="number" value="${item.qty}"></label>
+            <label class="field" style="flex:1;"><span>Birim</span><input id="f-pend-unit-edit" value="${item.unit||'adet'}"></label>
+          </div>
+          <button class="btn dark btn-full" onclick="submitEditPendingItem('${customerId}','${itemId}')">Kaydet</button>
+        </div>
+      </div>
+    </div>`);
+}
+function submitEditPendingItem(customerId, itemId){
+  const name = document.getElementById('f-pend-name-edit').value.trim();
+  const qty = Number(document.getElementById('f-pend-qty-edit').value);
+  const unit = document.getElementById('f-pend-unit-edit').value.trim() || 'adet';
+  if(!name || !qty) return;
+  const c = state.customers.find(x=>x.id===customerId); if(!c) return;
+  const item = (c.pendingItems||[]).find(i=>i.id===itemId); if(!item) return;
+  item.name = name; item.qty = qty; item.unit = unit;
+  persist(); closeModal(); render();
+}
+function markPendingItemDelivered(customerId, itemId){
+  requirePin(()=>{
+    const c = state.customers.find(x=>x.id===customerId); if(!c) return;
+    const item = (c.pendingItems||[]).find(i=>i.id===itemId); if(!item) return;
+    item.delivered = true;
+    item.deliveredDate = today();
+    persist(); closeModal(); render();
+  });
+}
+function undoPendingItemDelivered(customerId, itemId){
+  const c = state.customers.find(x=>x.id===customerId); if(!c) return;
+  const item = (c.pendingItems||[]).find(i=>i.id===itemId); if(!item) return;
+  item.delivered = false;
+  persist(); render();
+}
+function removePendingItem(customerId, itemId){
+  requirePin(()=>{
+    const c = state.customers.find(x=>x.id===customerId); if(!c) return;
+    c.pendingItems = (c.pendingItems||[]).filter(i=>i.id!==itemId);
+    persist(); closeModal(); render();
+  });
+}
+let expandedDelivered = new Set();
+function toggleDeliveredSection(customerId){
+  if(expandedDelivered.has(customerId)) expandedDelivered.delete(customerId); else expandedDelivered.add(customerId);
+  render();
+}
+let expandedTotals = new Set();
+function toggleTotalsSection(customerId){
+  if(expandedTotals.has(customerId)) expandedTotals.delete(customerId); else expandedTotals.add(customerId);
+  render();
+}
+function modalCustomerLocation(id){
+  const c = state.customers.find(x=>x.id===id); if(!c) return;
+  const hasLoc = c.location || c.locationQuery;
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-head"><h3>Konum</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          ${hasLoc?`<div class="card" style="padding:12px 14px;margin-bottom:14px;"><div class="muted" style="font-size:11px;text-transform:uppercase;margin-bottom:4px;">Kayıtlı Konum</div><div style="font-size:13.5px;">${c.location?`Enlem/Boylam: ${c.location.lat.toFixed(5)}, ${c.location.lng.toFixed(5)}`:c.locationQuery}</div></div>`:'<p class="muted" style="margin-bottom:14px;">Henüz konum kaydedilmedi.</p>'}
+          <button class="btn dark btn-full" style="margin-bottom:14px;" onclick="saveCustomerLocationGPS('${id}')">📍 Buradayım, Kaydet</button>
+          <p class="muted" style="margin-bottom:8px;">veya Google Haritalar'da müşterinin yerini bulup "Paylaş/Kopyala" ile aldığınız linki buraya yapıştırın:</p>
+          <label class="field"><span>Haritalar Linki</span><input id="f-mapslink" placeholder="https://maps.google.com/?q=..."></label>
+          <button class="btn ghost btn-full" style="margin-bottom:14px;" onclick="submitPasteMapsLink('${id}')">Linki Kaydet</button>
+          ${hasLoc?`<button class="btn ghost btn-full" style="color:var(--rust);border-color:var(--rust);" onclick="removeCustomerLocation('${id}')">Konumu Sil</button>`:''}
+        </div>
+      </div>
+    </div>`);
+}
+function saveCustomerLocationGPS(id){
+  if(!navigator.geolocation){ alert('Bu tarayıcı konum servisini desteklemiyor.'); return; }
+  navigator.geolocation.getCurrentPosition(
+    (pos)=>{
+      const c = state.customers.find(x=>x.id===id); if(!c) return;
+      c.location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      c.locationQuery = '';
+      persist(); closeModal(); render();
+    },
+    ()=>{ alert('Konum alınamadı. Konum izni verildiğinden emin olun.'); },
+    { enableHighAccuracy:true, timeout:10000 }
+  );
+}
+function submitPasteMapsLink(id){
+  const raw = document.getElementById('f-mapslink').value.trim();
+  if(!raw) return;
+  const c = state.customers.find(x=>x.id===id); if(!c) return;
+  const match = raw.match(/(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)/);
+  if(match){ c.location = { lat: parseFloat(match[1]), lng: parseFloat(match[2]) }; c.locationQuery=''; }
+  else { c.locationQuery = raw; c.location = null; alert('Linkten kesin koordinat bulunamadı (kısaltılmış linkler bazen desteklenmiyor), adres metni olarak kaydedildi.'); }
+  persist(); closeModal(); render();
+}
+function removeCustomerLocation(id){
+  if(!confirm('Konum bilgisi silinsin mi?')) return;
+  const c = state.customers.find(x=>x.id===id); if(!c) return;
+  c.location = null; c.locationQuery = '';
+  persist(); closeModal(); render();
+}
+function openDirections(id){
+  const c = state.customers.find(x=>x.id===id); if(!c) return;
+  if(c.location){ window.open(`https://www.google.com/maps/dir/?api=1&destination=${c.location.lat},${c.location.lng}`, '_blank'); }
+  else if(c.locationQuery){ window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(c.locationQuery)}`, '_blank'); }
 }
 let editingCustomerId = null;
 let pendingCustomerImage = null;
+function resizeImageFile(file, maxDim, quality, callback){
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      let w = img.width, h = img.height;
+      if(w > maxDim || h > maxDim){
+        if(w > h){ h = Math.round(h*maxDim/w); w = maxDim; } else { w = Math.round(w*maxDim/h); h = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      try{ callback(canvas.toDataURL('image/jpeg', quality)); }
+      catch(err){ callback(e.target.result); }
+    };
+    img.onerror = ()=>{ callback(e.target.result); };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
 function onCustomerImageSelect(input){
   const file = input.files && input.files[0]; if(!file) return;
-  const reader = new FileReader();
-  reader.onload = (e)=>{ pendingCustomerImage = e.target.result; const prev = document.getElementById('customer-img-preview'); if(prev){ prev.src = pendingCustomerImage; prev.style.display='block'; } };
-  reader.readAsDataURL(file);
+  resizeImageFile(file, 500, 0.7, (dataUrl)=>{
+    pendingCustomerImage = dataUrl;
+    const prev = document.getElementById('customer-img-preview');
+    if(prev){ prev.src = pendingCustomerImage; prev.style.display='block'; }
+  });
 }
 const ISTANBUL_TAX_OFFICES = ['Adalar','Arnavutköy','Ataşehir','Avcılar','Bağcılar','Bahçelievler','Bakırköy','Başakşehir','Bayrampaşa','Beşiktaş','Beykoz','Beylikdüzü','Beyoğlu','Büyükçekmece','Çatalca','Çekmeköy','Esenler','Esenyurt','Eyüpsultan','Fatih','Gaziosmanpaşa','Güngören','Kadıköy','Kağıthane','Kartal','Küçükçekmece','Maltepe','Pendik','Sancaktepe','Sarıyer','Silivri','Sultanbeyli','Sultangazi','Şile','Şişli','Tuzla','Ümraniye','Üsküdar','Zeytinburnu'].map(d=>d+' Vergi Dairesi');
 function fieldMic(fieldId){
@@ -580,6 +1330,22 @@ function startFieldVoice(fieldId){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if(!SR){ alert('Bu tarayıcı sesli komutu desteklemiyor. Chrome (Android) kullanmayı deneyin.'); return; }
   startVoiceGeneric(SR, (text)=>{ const el=document.getElementById(fieldId); if(el) el.value = text; }, 'mic-'+fieldId);
+}
+async function pickContact(){
+  if(!(navigator.contacts && navigator.contacts.select)){
+    alert('Bu tarayıcı rehber erişimini desteklemiyor. Chrome (Android) kullanmayı deneyin.');
+    return;
+  }
+  try{
+    const results = await navigator.contacts.select(['name','tel'], {multiple:false});
+    if(results && results.length){
+      const contact = results[0];
+      const nameEl = document.getElementById('f-name');
+      const phoneEl = document.getElementById('f-phone');
+      if(nameEl && contact.name && contact.name[0] && !nameEl.value) nameEl.value = contact.name[0];
+      if(phoneEl && contact.tel && contact.tel[0]) phoneEl.value = contact.tel[0];
+    }
+  }catch(e){ /* kullanıcı iptal etti veya izin verilmedi */ }
 }
 function modalCustomer(editId){
   editingCustomerId = editId || null;
@@ -593,15 +1359,19 @@ function modalCustomer(editId){
         <div class="modal-body">
           <p class="muted" style="margin-bottom:14px;">Her kutunun yanındaki mikrofona basıp sadece o bilgiyi söyleyin, bitirince tekrar dokunun.</p>
           <label class="field"><span>Ad Soyad / İşletme</span><div style="display:flex;gap:8px;">${fieldMic('f-name')}<input id="f-name" style="flex:1;" value="${c?c.name:''}"></div><div class="voice-hint" id="mic-f-name-status" style="font-weight:700;color:var(--rust);min-height:14px;"></div></label>
-          <label class="field"><span>Telefon (opsiyonel)</span><div style="display:flex;gap:8px;">${fieldMic('f-phone')}<input id="f-phone" style="flex:1;" value="${c?c.phone||'':''}"></div><div class="voice-hint" id="mic-f-phone-status" style="font-weight:700;color:var(--rust);min-height:14px;"></div></label>
+          <label class="field"><span>Telefon (opsiyonel)</span><div style="display:flex;gap:8px;">${fieldMic('f-phone')}<input id="f-phone" style="flex:1;" value="${c?c.phone||'':''}"><button class="btn ghost" style="padding:0 12px;white-space:nowrap;" onclick="pickContact()">📇 Rehber</button></div><div class="voice-hint" id="mic-f-phone-status" style="font-weight:700;color:var(--rust);min-height:14px;"></div></label>
           <label class="field"><span>Adres (opsiyonel)</span><div style="display:flex;gap:8px;align-items:flex-start;">${fieldMic('f-address')}<textarea id="f-address" style="flex:1;">${c?c.address||'':''}</textarea></div><div class="voice-hint" id="mic-f-address-status" style="font-weight:700;color:var(--rust);min-height:14px;"></div></label>
           <label class="field"><span>TCKN (opsiyonel, 11 haneli kimlik no)</span><div style="display:flex;gap:8px;">${fieldMic('f-tckn')}<input id="f-tckn" style="flex:1;" value="${c?c.tckn||'':''}"></div><div class="voice-hint" id="mic-f-tckn-status" style="font-weight:700;color:var(--rust);min-height:14px;"></div></label>
           <label class="field"><span>Vergi No / VKN (opsiyonel, firma vergi numarası)</span><div style="display:flex;gap:8px;">${fieldMic('f-taxid')}<input id="f-taxid" style="flex:1;" value="${c?c.taxId||'':''}"></div><div class="voice-hint" id="mic-f-taxid-status" style="font-weight:700;color:var(--rust);min-height:14px;"></div></label>
           <label class="field"><span>Vergi Dairesi (opsiyonel — yazın veya listeden seçin)</span><div style="display:flex;gap:8px;">${fieldMic('f-taxoffice')}<input id="f-taxoffice" list="tax-office-list" style="flex:1;" value="${c?c.taxOffice||'':''}"></div><datalist id="tax-office-list">${taxOfficeOptions}</datalist><div class="voice-hint" id="mic-f-taxoffice-status" style="font-weight:700;color:var(--rust);min-height:14px;"></div></label>
+          ${c?'':`<label class="field"><span>Eski Bakiye / Devir (opsiyonel — sistem öncesi kalan bakiye)</span><input id="f-openbal" type="text" inputmode="decimal" placeholder="Örn. 3500"></label>
+          <label class="field"><span>Eski Bakiye Tarihi</span><input id="f-openbal-date" type="date" value="${today()}"></label>`}
+          <label class="field check"><input type="checkbox" id="f-invoicefree" ${c&&c.invoiceFree?'checked':''}> <span>Faturasız Müşteri (bu müşteriye genelde fatura kesmiyoruz)</span></label>
           <label class="field"><span>Profil Fotoğrafı (opsiyonel)</span><input type="file" accept="image/*" onchange="onCustomerImageSelect(this)"></label>
           <img id="customer-img-preview" src="${c&&c.image?c.image:''}" style="${c&&c.image?'':'display:none;'}max-width:120px;border-radius:50%;margin-bottom:10px;border:1.5px solid var(--line);">
           ${c&&c.image?`<button class="btn ghost btn-full" style="margin-bottom:10px;" onclick="removeCustomerImage()">Fotoğrafı Kaldır</button>`:''}
           <button class="btn dark btn-full" onclick="submitCustomerModal()">Kaydet</button>
+          ${c?`<button class="btn ghost btn-full" style="margin-top:10px;color:var(--rust);border-color:var(--rust);" onclick="resetCustomerAccount('${c.id}')">Hesabı Sıfırla (Kayıtları Temizle)</button>`:''}
           ${c?`<button class="btn ghost btn-full" style="margin-top:10px;color:var(--rust);border-color:var(--rust);" onclick="removeCustomer('${c.id}')">${ICONS.trash} Müşteriyi Sil</button>`:''}
         </div>
       </div>
@@ -620,16 +1390,29 @@ function submitCustomerModal(){
   const tckn = document.getElementById('f-tckn').value.trim();
   const taxId = document.getElementById('f-taxid').value.trim();
   const taxOffice = document.getElementById('f-taxoffice').value.trim();
+  const invoiceFree = document.getElementById('f-invoicefree').checked;
   if(!name) return;
+  let savedCustomer = null;
   if(editingCustomerId){
     const c = state.customers.find(x=>x.id===editingCustomerId);
-    if(c){ c.name=name; c.phone=phone; c.address=address; c.tckn=tckn; c.taxId=taxId; c.taxOffice=taxOffice;
-      if(pendingCustomerImage==='REMOVE') c.image=null; else if(pendingCustomerImage) c.image=pendingCustomerImage; }
+    if(c){ c.name=name; c.phone=phone; c.address=address; c.tckn=tckn; c.taxId=taxId; c.taxOffice=taxOffice; c.invoiceFree=invoiceFree;
+      if(pendingCustomerImage==='REMOVE') c.image=null; else if(pendingCustomerImage) c.image=pendingCustomerImage;
+      savedCustomer = c; }
   } else {
-    const c = addCustomer(name, phone); c.address=address; c.tckn=tckn; c.taxId=taxId; c.taxOffice=taxOffice; if(pendingCustomerImage) c.image=pendingCustomerImage;
+    const dup = findDuplicateCustomer(name, phone);
+    if(dup && !confirm(`Benzer isimli veya aynı telefon numaralı bir müşteri zaten kayıtlı: "${dup.name}".\n\nBu farklı bir müşteri mi, yoksa aynısı mı? Yine de yeni bir kayıt olarak eklemek istiyorsanız devam edin.`)) return;
+    const c = addCustomer(name, phone); c.address=address; c.tckn=tckn; c.taxId=taxId; c.taxOffice=taxOffice; c.invoiceFree=invoiceFree; if(pendingCustomerImage) c.image=pendingCustomerImage;
+    const openBalEl = document.getElementById('f-openbal');
+    const openBal = openBalEl ? parseAmount(openBalEl.value) : 0;
+    if(openBal > 0){
+      const openDate = document.getElementById('f-openbal-date')?.value || today();
+      state.movements.push({id:uid(), customerId:c.id, date:openDate, dueDate:null, invoiced:false, type:'teslim', items:[], total:openBal, desc:'Devreden Bakiye (Eski Hesap)'});
+    }
+    savedCustomer = c;
   }
   editingCustomerId = null; pendingCustomerImage = null;
   persist(); closeModal(); render();
+  if(savedCustomer) sbUpsertCustomer(savedCustomer);
 }
 
 // ---------- product actions ----------
@@ -637,9 +1420,11 @@ let pendingProductImage = null;
 let editingProductId = null;
 function onProductImageSelect(input){
   const file = input.files && input.files[0]; if(!file) return;
-  const reader = new FileReader();
-  reader.onload = (e)=>{ pendingProductImage = e.target.result; const prev = document.getElementById('product-img-preview'); if(prev){ prev.src = pendingProductImage; prev.style.display='block'; } };
-  reader.readAsDataURL(file);
+  resizeImageFile(file, 500, 0.7, (dataUrl)=>{
+    pendingProductImage = dataUrl;
+    const prev = document.getElementById('product-img-preview');
+    if(prev){ prev.src = pendingProductImage; prev.style.display='block'; }
+  });
 }
 function recalcProductVat(){
   const price = parseAmount(document.getElementById('f-price').value||0);
@@ -659,6 +1444,7 @@ function modalProduct(editId){
         <div class="modal-head"><h3>${p?'Ürünü Düzenle':'Yeni Ürün'}</h3><button onclick="closeModal()">&times;</button></div>
         <div class="modal-body">
           <label class="field"><span>Ürün Adı (boyu ile birlikte yazın, örn. "Aktif Karbon 10L")</span><input id="f-pname" value="${p?p.name:''}"></label>
+          <label class="field"><span>Kısa Etiket (opsiyonel, örn. "10L", "20KG" — resmin üstünde rozet olarak görünür)</span><input id="f-plabel" value="${p&&p.shortLabel?p.shortLabel:''}" placeholder="10L"></label>
           <label class="field"><span>Birim Fiyat — KDV Hariç (₺)</span><input id="f-price" type="text" inputmode="decimal" value="${p?p.price:''}" oninput="recalcProductVat()"></label>
           <div class="kv-hint" id="product-vat-hint">${p?`KDV dahil: ₺${tl(p.price*1.2)}`:''}</div>
           <label class="field" style="margin-top:12px;"><span>Stok Adedi (opsiyonel, boş bırakabilirsiniz)</span><input id="f-stock" type="number" value="${p&&p.stock!=null?p.stock:''}"></label>
@@ -671,15 +1457,16 @@ function modalProduct(editId){
 }
 function submitProduct(){
   const name = document.getElementById('f-pname').value.trim();
+  const shortLabel = document.getElementById('f-plabel').value.trim();
   const priceRaw = document.getElementById('f-price').value;
   const price = parseAmount(priceRaw);
   const stock = document.getElementById('f-stock').value;
   if(!name || priceRaw==='') return;
   if(editingProductId){
     const p = state.products.find(x=>x.id===editingProductId);
-    if(p){ p.name=name; p.price=price; p.stock = stock===''?null:Number(stock); if(pendingProductImage) p.image = pendingProductImage; }
+    if(p){ p.name=name; p.shortLabel=shortLabel; p.price=price; p.stock = stock===''?null:Number(stock); if(pendingProductImage) p.image = pendingProductImage; }
   } else {
-    state.products.push({id:uid(), name, price, stock: stock===''?null:Number(stock), image: pendingProductImage});
+    state.products.push({id:uid(), name, shortLabel, price, stock: stock===''?null:Number(stock), image: pendingProductImage});
   }
   editingProductId = null; pendingProductImage = null;
   persist(); closeModal(); render();
@@ -690,7 +1477,7 @@ function removeLedger(id){
   const l = state.ledger.find(x=>x.id===id); if(!l) return;
   requirePin(()=>{ trashAdd('ledger', l); state.ledger = state.ledger.filter(l=>l.id!==id); persist(); render(); });
 }
-const EXPENSE_CATEGORIES = ['Mal Alımı','Nakliye / Dağıtım','Forklift / Depo','Personel','Kira / Fatura','Diğer'];
+const EXPENSE_CATEGORIES = ['Nakliye / Dağıtım','Forklift / Depo','Yakıt / Araç Masrafı','Kira / Fatura','Diğer'];
 let ledgerType = 'gider';
 let editingLedgerId = null;
 function modalLedger(editId){
@@ -736,7 +1523,7 @@ function recalcLedgerVat(){
   const base = parseAmount(document.getElementById('f-amount')?.value||0);
   const kdvOn = document.getElementById('f-kdvon')?.checked;
   const kdvPct = Number(document.getElementById('f-kdvpct')?.value||0);
-  const final = kdvOn ? base*(1+kdvPct/100) : base;
+  const final = round2(kdvOn ? base*(1+kdvPct/100) : base);
   const el = document.getElementById('ledger-vat-hint');
   if(el) el.textContent = base ? `KDV dahil toplam: ₺${tl(final)}` : '';
 }
@@ -748,7 +1535,7 @@ function submitLedger(){
   const kdvOn = document.getElementById('f-kdvon').checked;
   const kdvPct = Number(document.getElementById('f-kdvpct').value);
   if(!desc || !base || base<=0) return;
-  const amount = kdvOn ? base*(1+kdvPct/100) : base;
+  const amount = round2(kdvOn ? base*(1+kdvPct/100) : base);
   if(editingLedgerId){
     const l = state.ledger.find(x=>x.id===editingLedgerId);
     if(l){ l.type=ledgerType; l.category=category; l.desc=desc; l.baseAmount=base; l.kdvOn=kdvOn; l.kdvPct=kdvPct; l.amount=amount; }
@@ -818,13 +1605,13 @@ function captureDeliveryDraftMeta(){
   deliveryDraftMeta.date = document.getElementById('f-date')?.value;
   deliveryDraftMeta.dueDate = document.getElementById('f-duedate')?.value;
   deliveryDraftMeta.invoiced = document.getElementById('f-invoiced')?.checked;
-  const paidEl = document.getElementById('f-paid'); deliveryDraftMeta.paid = paidEl?paidEl.checked:false;
+  deliveryDraftMeta.paidAmount = document.getElementById('f-paidamount')?.value || '';
 }
 function restoreDeliveryDraftMeta(){
   const d=document.getElementById('f-date'); if(d&&deliveryDraftMeta.date) d.value=deliveryDraftMeta.date;
   const dd=document.getElementById('f-duedate'); if(dd&&deliveryDraftMeta.dueDate) dd.value=deliveryDraftMeta.dueDate;
   const inv=document.getElementById('f-invoiced'); if(inv) inv.checked=deliveryDraftMeta.invoiced;
-  const paid=document.getElementById('f-paid'); if(paid) paid.checked=deliveryDraftMeta.paid;
+  const pa=document.getElementById('f-paidamount'); if(pa) pa.value=deliveryDraftMeta.paidAmount||'';
 }
 function openDeliveryModal(customerId, existing){
   const productNames = state.products.map(p=>`<option value="${p.name}">`).join('');
@@ -840,7 +1627,7 @@ function openDeliveryModal(customerId, existing){
           <datalist id="product-list">${productNames}</datalist>
           <div id="lines-container"></div>
           <button class="btn ghost btn-full" style="margin-bottom:14px;" onclick="addDeliveryLine('${customerId}')">${ICONS.plus} Ürün Satırı Ekle</button>
-          ${existing?'':`<label class="field check"><input type="checkbox" id="f-paid"> <span>Peşin ödendi (borç oluşturma)</span></label>`}
+          <label class="field"><span>Bu teslimatla birlikte alınan ödeme (₺, opsiyonel — kısmi de olabilir)</span><input id="f-paidamount" type="text" inputmode="decimal" placeholder="Boş bırakabilir, kısmi veya tam tutar girebilirsiniz"></label>
           <label class="field check"><input type="checkbox" id="f-invoiced" ${existing&&existing.invoiced?'checked':''}> <span>Fatura kesildi</span></label>
           <div class="card" style="padding:12px 14px;margin-bottom:12px;"><div class="muted" style="font-size:11px;text-transform:uppercase;">Genel Toplam (KDV dahil)</div><div class="mono" id="grand-total" style="font-size:20px;"></div></div>
           <button class="btn dark btn-full" onclick="submitDelivery('${customerId}')">${existing?'Değişiklikleri Kaydet':'Teslimatı Kaydet'}</button>
@@ -862,7 +1649,7 @@ function renderDeliveryLines(customerId){
     <div class="lineitem">
       ${deliveryLines.length>1 ? `<button class="line-remove" onclick="removeDeliveryLine('${l.id}','${customerId}')">${ICONS.close}</button>`:''}
       <button class="product-pick" style="width:100%;" onclick="openProductPicker('${l.id}','${customerId}')">
-        ${l.productId && state.products.find(p=>p.id===l.productId)?.image ? `<img src="${state.products.find(p=>p.id===l.productId).image}" class="thumb">` : `<div class="ph">${ICONS.box2}</div>`}
+        ${(()=>{ const matched = l.productId ? state.products.find(p=>p.id===l.productId) : null; return matched ? productThumbHtml(matched, 40) : `<div class="ph">${ICONS.box2}</div>`; })()}
         <div style="text-align:left;flex:1;"><strong>${l.name||'Ürün Seç'}</strong>${l.name?`<div class="muted" style="font-size:11.5px;">Değiştirmek için dokunun</div>`:`<div class="muted" style="font-size:11.5px;">Kayıtlı ürünlerden seçin</div>`}</div>
       </button>
       <div class="top-row" style="margin-top:8px;">
@@ -884,7 +1671,7 @@ function openProductPicker(lineId, customerId){
   captureDeliveryDraftMeta();
   const cards = state.products.map(p=>`
     <div class="product-pick" onclick="selectProductForLine('${lineId}','${p.id}','${customerId}')">
-      ${p.image?`<img src="${p.image}" class="thumb">`:`<div class="ph">${ICONS.box2}</div>`}
+      ${productThumbHtml(p, 40)}
       <div style="text-align:left;flex:1;"><strong>${p.name}</strong><div class="muted" style="font-size:11.5px;">KDV hariç ₺${tl(p.price)} · KDV dahil ₺${tl(p.price*1.2)}</div></div>
     </div>`).join('');
   openModal(`
@@ -926,11 +1713,11 @@ function recalcLine(id){
   l.price = parseAmount(document.getElementById('price-'+id)?.value || 0);
   l.kdvOn = document.getElementById('kdv-'+id)?.checked ?? l.kdvOn;
   l.kdvPct = Number(document.getElementById('kdvpct-'+id)?.value || 0);
-  const finalUnit = l.kdvOn ? l.price*(1+l.kdvPct/100) : l.price;
-  const lineTotal = l.qty*finalUnit;
+  const finalUnit = round2(l.kdvOn ? l.price*(1+l.kdvPct/100) : l.price);
+  const lineTotal = round2(l.qty*finalUnit);
   const totalEl = document.getElementById('total-'+id);
-  if(totalEl) totalEl.innerHTML = l.qty && l.price ? `${l.qty} × ₺${tl(finalUnit)} = <strong>₺${tl(lineTotal)}</strong>` : '';
-  const grand = deliveryLines.reduce((a,x)=>{ const fu = x.kdvOn ? x.price*(1+x.kdvPct/100) : x.price; return a + x.qty*fu; },0);
+  if(totalEl) totalEl.innerHTML = l.qty && l.price ? `${l.qty} × ₺${tl(finalUnit)} = <strong>₺${tl(lineTotal)}</strong>${finalUnit>5000?` <span style="color:var(--rust);font-weight:700;">⚠️ Fiyat çok yüksek görünüyor, kontrol edin</span>`:''}` : '';
+  const grand = deliveryLines.reduce((a,x)=>{ const fu = round2(x.kdvOn ? x.price*(1+x.kdvPct/100) : x.price); return a + round2(x.qty*fu); },0);
   const grandEl = document.getElementById('grand-total');
   if(grandEl) grandEl.textContent = '₺'+tl(grand);
 }
@@ -938,12 +1725,11 @@ let pendingDeliveryEdit = null;
 function submitDelivery(customerId){
   const date = document.getElementById('f-date').value || today();
   const dueDate = document.getElementById('f-duedate').value || null;
-  const paidEl = document.getElementById('f-paid');
-  const paid = paidEl ? paidEl.checked : false;
+  const paidAmount = parseAmount(document.getElementById('f-paidamount')?.value || 0);
   const invoiced = document.getElementById('f-invoiced').checked;
   const items = deliveryLines.filter(l=>l.qty>0 && l.price>=0 && l.name.trim()).map(l=>{
-    const finalUnit = l.kdvOn ? l.price*(1+l.kdvPct/100) : l.price;
-    return { productId: l.productId||null, name: l.name.trim(), qty:l.qty, unitPrice:finalUnit, lineTotal: l.qty*finalUnit };
+    const finalUnit = round2(l.kdvOn ? l.price*(1+l.kdvPct/100) : l.price);
+    return { productId: l.productId||null, name: l.name.trim(), qty:l.qty, unitPrice:finalUnit, lineTotal: round2(l.qty*finalUnit) };
   });
   if(!items.length) return;
   const total = items.reduce((a,i)=>a+i.lineTotal,0);
@@ -952,13 +1738,13 @@ function submitDelivery(customerId){
     const m = state.movements.find(x=>x.id===editingMovementId);
     if(!m) return;
     captureDeliveryDraftMeta();
-    pendingDeliveryEdit = { customerId, movementId: editingMovementId, date, dueDate, invoiced, items, total, desc };
+    pendingDeliveryEdit = { customerId, movementId: editingMovementId, date, dueDate, invoiced, items, total, desc, paidAmount };
     requirePin(()=>{ openDeliveryEditConfirm(m, pendingDeliveryEdit); });
     return;
   } else {
     items.forEach(it=>{ if(it.productId){ const p=state.products.find(p=>p.id===it.productId); if(p&&p.stock!=null) p.stock=Math.max(0,p.stock-it.qty); } });
     state.movements.push({id:uid(), customerId, date, dueDate, invoiced, type:'teslim', items, total, desc});
-    if(paid){ state.movements.push({id:uid(), customerId, date, type:'odeme', total, desc:'Peşin ödeme'}); }
+    if(paidAmount>0){ state.movements.push({id:uid(), customerId, date, type:'odeme', total:paidAmount, desc:'Teslimatla birlikte alınan ödeme'}); }
   }
   persist(); closeModal(); render();
 }
@@ -992,6 +1778,7 @@ function confirmDeliveryEdit(){
     revertStock(m);
     d.items.forEach(it=>{ if(it.productId){ const p=state.products.find(p=>p.id===it.productId); if(p&&p.stock!=null) p.stock=Math.max(0,p.stock-it.qty); } });
     m.date=d.date; m.dueDate=d.dueDate; m.invoiced=d.invoiced; m.items=d.items; m.total=d.total; m.desc=d.desc;
+    if(d.paidAmount>0){ state.movements.push({id:uid(), customerId:d.customerId, date:d.date, type:'odeme', total:d.paidAmount, desc:'Ödeme (düzenlemede eklendi)'}); }
   }
   editingMovementId = null; pendingDeliveryEdit = null;
   persist(); closeModal(); render();
@@ -1063,6 +1850,32 @@ function downloadBackup(){
   const a = document.createElement('a'); a.href = url; a.download = 'defterim-yedek-'+today()+'.json';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
+}
+function modalPasteRestore(){
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-head"><h3>Yapıştırarak Geri Yükle</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          <p class="muted" style="margin-bottom:12px;">Yedek dosyanızı bir metin uygulamasında açıp içeriğinin tamamını kopyalayın, aşağıya yapıştırın.</p>
+          <textarea id="paste-restore-text" style="min-height:180px;font-family:monospace;font-size:12px;" placeholder="{ ... yedek metnini buraya yapıştırın ... }"></textarea>
+          <div id="paste-restore-error" style="color:var(--rust);font-size:13px;margin:8px 0;"></div>
+          <button class="btn dark btn-full" onclick="submitPasteRestore()">Geri Yükle</button>
+        </div>
+      </div>
+    </div>`);
+}
+function submitPasteRestore(){
+  const raw = document.getElementById('paste-restore-text').value;
+  const err = document.getElementById('paste-restore-error');
+  try{
+    const data = JSON.parse(raw);
+    if(!data.customers || !data.movements){ err.textContent='Geçerli bir Defterim yedeği gibi görünmüyor.'; return; }
+    if(!confirm('Mevcut verilerin üzerine yazılacak, emin misiniz?')) return;
+    data.freeNotes = data.freeNotes || []; data.ledger = data.ledger || []; data.suppliers = data.suppliers || []; data.supplierMovements = data.supplierMovements || []; data.pin = data.pin || null; data.trash = data.trash || [];
+    state = data; persist(); render();
+    alert('Yedek başarıyla geri yüklendi.');
+  }catch(e){ err.textContent='Metin okunamadı. Doğru yedek metnini yapıştırdığınızdan emin olun.'; }
 }
 function restoreBackupFile(input){
   const file = input.files && input.files[0]; if(!file) return;
@@ -1166,15 +1979,39 @@ function backToCustomers(){ view='customers'; selectedCustomerId=null; render();
 
 // ---------- render helpers ----------
 function statCard(label, value, icon, tone, onclick){
-  const colorMap = {blue:'var(--blue)', bordo:'var(--rust)', green:'var(--green)', navy:'var(--navy)'};
-  const color = colorMap[tone] || 'var(--navy)';
+  const HEX = {blue:'#1F5C86', bordo:'#7B2D3E', green:'#2F7A4D', navy:'#0B2027'};
+  const color = HEX[tone] || HEX.navy;
   return `<div class="card stat" style="border-left:6px solid ${color};${onclick?'cursor:pointer;':''}" ${onclick?`onclick="${onclick}"`:''}>
-    <div><div class="label">${label}</div><div class="value mono" style="color:${color}">₺${tl(value)}</div></div>
-    <div class="icon" style="background:${color}1f; color:${color};">${ICONS[icon]}</div>
+    <div><div class="label">${label}</div><div class="value mono" style="color:${color}; font-size:22px;">₺${tl(value)}</div></div>
+    <div class="icon" style="background:${color}; color:#fff; box-shadow:0 2px 8px ${color}66;">${ICONS[icon]}</div>
   </div>`;
 }
-function miniCard(label, valueHtml){ return `<div class="card" style="padding:14px;"><div class="muted" style="font-size:11px;text-transform:uppercase;margin-bottom:4px;">${label}</div><div class="mono" style="font-size:19px;">${valueHtml}</div></div>`; }
+function heroStat(label, value, tone, compact){
+  const HEX = {blue:'#1F5C86', bordo:'#7B2D3E', green:'#2F7A4D', teal:'#2F6F6B', navy:'#0B2027'};
+  const color = HEX[tone] || HEX.navy;
+  const pad = compact ? '10px 8px' : '14px 12px';
+  const labelSize = compact ? '8.5px' : '10px';
+  const valueSize = compact ? '14px' : '18px';
+  return `<div class="card" style="background:${color};border:none;padding:${pad};">
+    <div style="color:rgba(255,255,255,.8);font-size:${labelSize};letter-spacing:.04em;text-transform:uppercase;font-weight:700;margin-bottom:4px;line-height:1.25;">${label}</div>
+    <div class="mono" style="color:#fff;font-size:${valueSize};font-weight:700;">₺${tl(value)}</div>
+  </div>`;
+}
+function miniCard(label, valueHtml, tone){
+  const HEX = {blue:'#1F5C86', green:'#2F7A4D'};
+  const color = HEX[tone] || null;
+  return `<div class="card" style="padding:14px;${color?`border-left:4px solid ${color};`:''}"><div class="muted" style="font-size:11px;text-transform:uppercase;margin-bottom:4px;">${label}</div><div class="mono" style="font-size:19px;${color?`color:${color};`:''}">${valueHtml}</div></div>`;
+}
 function telLink(phone){ if(!phone) return ''; return `<a class="tel-link" href="tel:${phone.replace(/\s+/g,'')}" onclick="event.stopPropagation()">${phone}</a>`; }
+function productThumbHtml(p, size){
+  size = size || 48;
+  const roundedImg = p.shortLabel ? '0 0 5px 5px' : '5px';
+  const img = p.image
+    ? `<img src="${p.image}" style="width:${size}px;height:${size}px;object-fit:cover;border:1.5px solid var(--line);${p.shortLabel?'border-top:none;':''}border-radius:${roundedImg};display:block;">`
+    : `<div style="width:${size}px;height:${size}px;display:flex;align-items:center;justify-content:center;color:var(--muted);border:1.5px solid var(--line);${p.shortLabel?'border-top:none;':''}border-radius:${roundedImg};">${ICONS.box2}</div>`;
+  const label = p.shortLabel ? `<div style="background:var(--blue);color:#fff;font-weight:800;font-size:12.5px;letter-spacing:.03em;padding:5px 4px;border-radius:5px 5px 0 0;width:${size}px;text-align:center;box-sizing:border-box;line-height:1.15;">${p.shortLabel}</div>` : '';
+  return `<div style="display:flex;flex-direction:column;flex-shrink:0;">${label}${img}</div>`;
+}
 
 function renderHeader(){
   const h = document.getElementById('topheader');
@@ -1183,7 +2020,7 @@ function renderHeader(){
     h.style.display='flex'; h.style.alignItems='center';
     h.innerHTML = `<button class="back" onclick="backToCustomers()">‹</button>
       <div class="badge">${c&&c.image?`<img src="${c.image}">`:'<span>'+(c?c.name[0]:'?')+'</span>'}</div>
-      <div style="flex:1;"><div class="title">${c?c.name:'Müşteri'}</div><div class="sub">${c&&c.phone?telLink(c.phone):'Cari Hesap'}</div></div>
+      <div style="flex:1;"><div class="title">${c?c.name:'Müşteri'}</div><div class="sub">${c&&c.phone?telLink(c.phone):(c?'Cari Hesap':'')}</div></div>
       <button class="icon-btn edit" style="color:#fff;" onclick="modalCustomer('${c?c.id:''}')">${ICONS.edit}</button>`;
   } else if(view==='supplierDetail'){
     const s = state.suppliers.find(x=>x.id===selectedSupplierId);
@@ -1192,6 +2029,20 @@ function renderHeader(){
   } else if(view==='suppliers'){
     h.style.display='flex'; h.style.alignItems='center';
     h.innerHTML = `<button class="back" onclick="setView('accounts')">‹</button><div><div class="title">Tedarikçiler</div><div class="sub">İşletme Kaydı</div></div>`;
+  } else if(view==='employeeDetail'){
+    const e = state.employees.find(x=>x.id===selectedEmployeeId);
+    h.style.display='flex'; h.style.alignItems='center';
+    h.innerHTML = `<button class="back" onclick="backToEmployees()">‹</button><div style="flex:1;"><div class="title">${e?e.name:'Çalışan'}</div><div class="sub">${e&&e.phone?telLink(e.phone):'Çalışan Hesabı'}</div></div>`;
+  } else if(view==='employees'){
+    h.style.display='flex'; h.style.alignItems='center';
+    h.innerHTML = `<button class="back" onclick="setView('accounts')">‹</button><div><div class="title">Çalışanlar</div><div class="sub">İşletme Kaydı</div></div>`;
+  } else if(view==='bankLoanDetail'){
+    const b = state.bankLoans.find(x=>x.id===selectedBankLoanId);
+    h.style.display='flex'; h.style.alignItems='center';
+    h.innerHTML = `<button class="back" onclick="backToBankLoans()">‹</button><div><div class="title">${b?b.name:'Banka'}</div><div class="sub">Banka Kredisi</div></div>`;
+  } else if(view==='bankLoans'){
+    h.style.display='flex'; h.style.alignItems='center';
+    h.innerHTML = `<button class="back" onclick="setView('accounts')">‹</button><div><div class="title">Banka Kredileri</div><div class="sub">Bağımsız Takip</div></div>`;
   } else {
     h.style.display='flex'; h.style.alignItems='center';
     h.innerHTML = `<div class="badge"><span>D</span></div><div><div class="title">Defterim</div><div class="sub">İşletme Kaydı</div></div>`;
@@ -1217,8 +2068,13 @@ function render(){
     })).sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,8);
     const reminders = upcomingPaymentsList();
 
+    const supplierPaidTotal = state.supplierMovements.filter(m=>m.type==='odeme').reduce((a,m)=>a+m.amount,0);
+    const employeePaidTotal = state.employeeMovements.filter(m=>m.type==='odeme').reduce((a,m)=>a+m.amount,0);
+    const netExpenseTotal = manualExpense + supplierPaidTotal + employeePaidTotal;
     html += `<h1 class="page">Genel Bakış</h1><p class="muted" style="margin-bottom:18px;">${fmtDate(today())}</p>`;
-    html += `<div class="grid3">${statCard('Satış Geliri', totalDeliveries, 'up', 'blue')}${statCard('Toplam Gider', manualExpense, 'down', 'bordo', "setView('accounts')")}${statCard('Net Kazanç', netProfit, 'wallet', netProfit>=0?'green':'bordo')}</div>`;
+    html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:7px;">${heroStat('Net Ciro', totalDeliveries, 'blue')}${heroStat('Net Gider', netExpenseTotal, 'bordo')}</div>`;
+    html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px;">${heroStat('Gelen Ödeme', totalPaymentsIn, 'teal')}${heroStat('Kalan Ödemeler', totalReceivable, 'teal')}</div>`;
+    html += `<button class="btn blue btn-full" style="margin-bottom:18px;" onclick="shareGeneralStatement()">📤 Genel Hesap Özetini Gönder</button>`;
 
     if(reminders.length){
       html += `<div class="card" style="margin-bottom:18px;"><div style="padding:14px 16px 6px;"><h2 class="serif" style="font-size:15px;margin:0;">⏰ Yaklaşan / Geciken Ödemeler</h2></div>`;
@@ -1235,10 +2091,8 @@ function render(){
     }
 
     html += `<div class="grid4">
-      ${miniCard('Müşteri Sayısı', state.customers.length)}
-      ${miniCard('Ürün Çeşidi', state.products.length)}
-      ${miniCard('Gelen Ödeme', '₺'+tl(totalPaymentsIn))}
-      ${miniCard('Kalan Ödemeler', `<span style="color:${totalReceivable>0?'var(--rust)':'var(--navy)'}">₺${tl(totalReceivable)}</span>`)}
+      ${miniCard('Müşteri Sayısı', state.customers.length, 'blue')}
+      ${miniCard('Ürün Çeşidi', state.products.length, 'blue')}
     </div>`;
 
     html += `<div class="card" style="padding:16px; margin-bottom:18px;"><h2 class="serif" style="font-size:16px;margin:0 0 10px;">Son Hareketler</h2>`;
@@ -1251,35 +2105,54 @@ function render(){
       <p class="muted" style="margin-bottom:12px;">Telefon değişirse veya tarayıcı verisi silinirse kayıtlarınız kaybolabilir. Düzenli yedek alın.</p>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="btn blue" onclick="downloadBackup()">${ICONS.download} Yedek İndir</button>
-        <label class="btn ghost" style="cursor:pointer;">${ICONS.upload} Yedekten Geri Yükle<input type="file" accept="application/json" style="display:none;" onchange="restoreBackupFile(this)"></label>
+        <label class="btn ghost" style="cursor:pointer;">${ICONS.upload} Dosyadan Geri Yükle<input type="file" accept="application/json" style="display:none;" onchange="restoreBackupFile(this)"></label>
+        <button class="btn ghost" onclick="modalPasteRestore()">${ICONS.upload} Yapıştırarak Geri Yükle</button>
       </div>
     </div>`;
   }
 
   else if(view==='customers'){
-    html += `<h1 class="page">Müşteriler</h1><div class="fab-row"><button class="btn" onclick="modalCustomer()">${ICONS.plus} Müşteri Ekle</button></div>`;
+    html += `<h1 class="page">Müşteriler</h1><div class="fab-row"><button class="btn" onclick="modalCustomer()">${ICONS.plus} Müşteri Ekle</button><button class="btn ghost" onclick="uploadAllCustomersToCloud()">☁️ Buluta Yükle</button></div>`;
     html += `<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:12px;">
       <label class="field" style="flex:1;margin:0;"><input id="customer-search" type="text" placeholder="İsim veya telefon ile ara…" value="${customerSearchQuery.replace(/"/g,'&quot;')}" oninput="onCustomerSearch(this.value)"></label>
       <button class="mic-btn" id="mic-customer-search" onclick="startCustomerSearchVoice()" title="Sesli ara">${ICONS.mic}</button>
     </div>`;
-    const q = customerSearchQuery.trim().toLowerCase();
-    const filteredCustomers = q ? state.customers.filter(c => c.name.toLowerCase().includes(q) || (c.phone||'').toLowerCase().includes(q)) : state.customers;
+    const turkishLower = s => (s||'').replace(/İ/g,'i').replace(/I/g,'ı').toLowerCase()
+      .replace(/ü/g,'u').replace(/ö/g,'o').replace(/ç/g,'c').replace(/ş/g,'s').replace(/ğ/g,'g').replace(/ı/g,'i');
+    const qWords = turkishLower(customerSearchQuery).trim().split(/\s+/).filter(Boolean);
+    const filteredCustomers = (qWords.length ? state.customers.filter(c=>{
+      const hay = turkishLower(c.name) + ' ' + turkishLower(c.phone||'');
+      return qWords.every(w=> hay.includes(w));
+    }) : state.customers.slice()).sort((a,b)=> turkishLower(a.name).localeCompare(turkishLower(b.name), 'tr'));
     html += `<div class="card">`;
     if(state.customers.length===0){ html += `<div class="empty">Henüz müşteri eklenmedi.</div>`; }
     else if(filteredCustomers.length===0){ html += `<div class="empty">"${customerSearchQuery}" ile eşleşen müşteri bulunamadı.</div>`; }
     else {
-      filteredCustomers.forEach(c=>{
+      let rowIdx = 0; let lastLetter = '';
+      filteredCustomers.forEach((c)=>{
         const bal = customerBalance(c.id);
-        const balColor = bal>0 ? 'var(--rust)' : (bal<0 ? 'var(--green)' : 'var(--muted)');
-        const balLabel = bal>0 ? 'borcu var' : (bal<0 ? 'alacaklı' : 'hesap kapalı');
+        const custMs = state.movements.filter(m=>m.customerId===c.id);
+        let balColor, balLabel;
+        if(bal>0){ balColor='var(--rust)'; balLabel='borcu var'; }
+        else if(bal<0){ balColor='var(--green)'; balLabel='alacaklı'; }
+        else if(custMs.length){
+          const lastDate = custMs.slice().sort((a,b)=>new Date(b.date)-new Date(a.date))[0].date;
+          balColor='var(--green)'; balLabel=`Peşin ödendi ✓ (${fmtDate(lastDate)})`;
+        } else { balColor='var(--muted)'; balLabel='Henüz hareket yok'; }
         const overdue = customerOverdue(c.id);
-        html += `<div class="row clickable" onclick="openCustomer('${c.id}')">
+        const lastTeslim = custMs.filter(m=>m.type==='teslim').sort((a,b)=>new Date(b.date)-new Date(a.date))[0];
+        const invoiceTag = c.invoiceFree ? `<span class="pill" style="background:var(--muted);color:#fff;font-size:9.5px;margin-top:3px;">Faturasız Müşteri</span>` : (lastTeslim ? (lastTeslim.invoiced ? `<span class="pill" style="background:var(--green);color:#fff;font-size:9.5px;margin-top:3px;">Fatura ✓</span>` : `<span class="pill" style="background:var(--rust);color:#fff;font-size:9.5px;margin-top:3px;">Fatura Bekliyor</span>`) : '');
+        let hash=0; for(let i=0;i<c.name.length;i++){ hash = c.name.charCodeAt(i) + ((hash<<5)-hash); }
+        const avatarHue = Math.abs(hash) % 360;
+        const avatarColor = `hsl(${avatarHue}, 45%, 42%)`;
+        html += `<div class="row clickable" style="background:${rowIdx%2===1?'rgba(31,92,134,.05)':'transparent'};" onclick="openCustomer('${c.id}')">
           <div style="display:flex;align-items:center;gap:10px;">
-            ${c.image?`<img src="${c.image}" class="avatar">`:`<div class="avatar" style="display:flex;align-items:center;justify-content:center;color:var(--muted);font-weight:700;">${c.name[0]}</div>`}
+            ${c.image?`<img src="${c.image}" class="avatar">`:`<div class="avatar" style="display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;background:${avatarColor};">${c.name[0]}</div>`}
             <div><div><strong>${c.name}</strong></div><div class="muted" style="font-size:11.5px;">${c.phone?telLink(c.phone):''}</div>${overdue?`<div class="overdue-tag">⏰ Vadesi geçti: ${fmtDate(overdue)}</div>`:''}</div>
           </div>
-          <div style="text-align:right;"><div class="mono" style="color:${balColor};font-weight:700;">₺${tl(Math.abs(bal))}</div><div class="muted" style="font-size:10.5px;">${balLabel}</div></div>
+          <div style="text-align:right;"><div class="mono" style="color:${balColor};font-weight:700;">₺${tl(Math.abs(bal))}</div><div class="muted" style="font-size:10.5px;">${balLabel}</div>${invoiceTag}</div>
         </div>`;
+        rowIdx++;
       });
     }
     html += `</div>`;
@@ -1291,7 +2164,7 @@ function render(){
     const t = customerTotals(c.id);
     let running = 0;
     const rows = customerMovements(c.id).map(m=>{ running += m.type==='teslim' ? m.total : -m.total; return {...m, running}; });
-    html += `<div class="fab-row"><button class="btn ghost" onclick="modalCustomer('${c.id}')">${ICONS.edit} Müşteriyi Düzenle</button></div>`;
+    html += `<div class="fab-row"><button class="btn ghost" onclick="modalCustomer('${c.id}')">${ICONS.edit} Müşteriyi Düzenle</button><button class="btn blue" onclick="shareCustomerStatement('${c.id}')">📤 Hesap Özetini Gönder</button><button class="btn ghost" onclick="modalOpeningBalance('${c.id}')">Eski Bakiye Ekle</button>${(c.location||c.locationQuery)?`<button class="btn ghost" onclick="openDirections('${c.id}')">🧭 Yol Tarifi Al</button><button class="btn ghost" onclick="modalCustomerLocation('${c.id}')">📍 Konumu Düzenle</button>`:`<button class="btn ghost" onclick="modalCustomerLocation('${c.id}')">📍 Konum Ekle</button>`}</div>`;
     if(c.address || c.tckn || c.taxId || c.taxOffice){
       html += `<div class="card" style="padding:14px 16px;margin-bottom:14px;font-size:13.5px;">
         ${c.address?`<div class="muted">Adres: <span style="color:var(--navy);">${c.address}</span></div>`:''}
@@ -1305,6 +2178,28 @@ function render(){
       ${statCard('Gelen Ödeme', t.totalPaid, 'up', 'green')}
       ${statCard('Kalan Ödeme', Math.abs(t.balance), 'wallet', t.balance>0?'bordo':'green')}
     </div>`;
+
+    // Teslim edilmeyen ürünler
+    const pendingAll = c.pendingItems || [];
+    const pendingActive = pendingAll.filter(i=>!i.delivered);
+    const pendingDone = pendingAll.filter(i=>i.delivered);
+    const unitTotals = {};
+    pendingActive.forEach(i=>{ unitTotals[i.unit] = (unitTotals[i.unit]||0) + i.qty; });
+    const totalsText = Object.keys(unitTotals).map(u=>`${unitTotals[u]} ${u}`).join(', ');
+    html += `<div class="card" style="padding:16px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <h2 class="serif" style="font-size:15px;margin:0;">📦 Teslim Edilmeyen Ürünler</h2>
+        <button class="btn ghost" style="padding:6px 10px;font-size:12px;" onclick="modalAddPendingItem('${c.id}')">${ICONS.plus} Ekle</button>
+      </div>
+      ${pendingActive.length ? pendingActive.map(i=>`<div class="row" style="padding:8px 0;flex-wrap:wrap;gap:6px;"><div style="flex:1;min-width:100px;">${i.qty} ${i.unit} × ${i.name}</div><div style="display:flex;gap:6px;"><button class="btn ghost" style="padding:6px 10px;font-size:11.5px;" onclick="markPendingItemDelivered('${c.id}','${i.id}')">Teslim Edildi İşaretle</button><button class="icon-btn edit" onclick="modalEditPendingItem('${c.id}','${i.id}')">${ICONS.edit}</button><button class="icon-btn trash" onclick="removePendingItem('${c.id}','${i.id}')">${ICONS.trash}</button></div></div>`).join('') : '<p class="muted" style="margin:0 0 8px;">Bekleyen ürün yok.</p>'}
+      ${pendingActive.length ? `<div class="muted" style="font-size:12.5px;font-weight:700;border-top:1.5px solid var(--linefaint);padding-top:8px;margin-top:4px;">Toplam Bekleyen: ${totalsText}</div>` : ''}
+      ${pendingDone.length ? `<div style="border-top:1.5px solid var(--linefaint);margin-top:10px;padding-top:8px;">
+        <button class="btn ghost" style="padding:6px 10px;font-size:12px;" onclick="toggleDeliveredSection('${c.id}')">Teslim Edilenler (${pendingDone.length}) ${expandedDelivered.has(c.id)?'▲':'▼'}</button>
+        ${expandedDelivered.has(c.id) ? pendingDone.map(i=>`<div class="row" style="padding:8px 0;flex-wrap:wrap;gap:6px;"><div style="flex:1;min-width:100px;text-decoration:line-through;color:var(--muted);">🟢 ${i.qty} ${i.unit} × ${i.name}</div><div style="display:flex;gap:6px;"><button class="btn ghost" style="padding:6px 10px;font-size:11.5px;" onclick="undoPendingItemDelivered('${c.id}','${i.id}')">Geri Al</button><button class="icon-btn trash" onclick="removePendingItem('${c.id}','${i.id}')">${ICONS.trash}</button></div></div>`).join('') : ''}
+      </div>` : ''}
+    </div>`;
+
+
     html += `<div class="fab-row">
       <button class="btn dark" onclick="modalDelivery('${c.id}')">${ICONS.plus} Teslimat Ekle</button>
       <button class="btn" onclick="modalPayment('${c.id}')">${ICONS.plus} Ödeme Al</button>
@@ -1326,7 +2221,8 @@ function render(){
               <div class="muted" style="font-size:11px;">Bakiye: ₺${tl(m.running)}</div>
             </div>
           </div>
-          <div style="font-size:14px;line-height:1.4;margin-bottom:8px;">${isTeslim ? (m.desc||'Teslimat') : (m.desc||'Ödeme')} ${isTeslim && m.invoiced?`<span class="pill" style="background:rgba(47,122,77,.15);color:var(--green);margin-left:4px;">Fatura ✓</span>`:''}</div>
+          <div style="font-size:14px;line-height:1.4;margin-bottom:4px;">${isTeslim ? (m.desc||'Teslimat') : (m.desc||'Ödeme')} ${isTeslim && m.invoiced?`<span class="pill" style="background:rgba(47,122,77,.15);color:var(--green);margin-left:4px;">Fatura ✓</span>`:''}</div>
+          ${isTeslim && m.items && m.items.length ? `<div class="muted" style="font-size:12px;font-weight:700;margin-bottom:8px;">Toplam: ${m.items.reduce((a,it)=>a+it.qty,0)} adet</div>` : '<div style="margin-bottom:8px;"></div>'}
           <div style="display:flex;gap:8px;justify-content:flex-end;border-top:1.5px solid var(--linefaint);padding-top:8px;">
             <button class="btn ghost" style="padding:8px 14px;font-size:13px;" onclick="editMovement('${m.id}','${c.id}')">${ICONS.edit} Düzenle</button>
             <button class="btn ghost" style="padding:8px 14px;font-size:13px;color:var(--rust);border-color:var(--rust);" onclick="removeMovement('${m.id}')">${ICONS.trash} Sil</button>
@@ -1336,10 +2232,9 @@ function render(){
     }
     html += `<div class="card" style="padding:16px;">
       <h2 class="serif" style="font-size:16px;margin:0 0 10px;">Notlar</h2>
-      <textarea id="note-text" placeholder="Bu müşteriyle ilgili hatırlamak istediklerinizi yazın…">${c.note||''}</textarea>
-      <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
-        <button class="btn dark" onclick="saveCustomerNote('${c.id}')">Notu Kaydet</button>
-        <span class="muted" id="note-status"></span>
+      ${c.note ? `<div class="muted" style="font-size:13.5px;max-height:44px;overflow:hidden;line-height:1.5;">${c.note}</div>` : `<p class="muted" style="margin:0;">Henüz not eklenmedi.</p>`}
+      <div style="display:flex; align-items:center; gap:10px; margin-top:10px;">
+        <button class="btn dark" onclick="modalCustomerNote('${c.id}')">${c.note?'Notu Aç / Düzenle':'Not Ekle'}</button>
       </div>
     </div>`;
   }
@@ -1351,7 +2246,7 @@ function render(){
     else {
       state.products.forEach(p=>{
         html += `<div class="card" style="padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;gap:12px;">
-          ${p.image?`<img src="${p.image}" class="thumb" style="width:48px;height:48px;">`:`<div class="thumb" style="width:48px;height:48px;display:flex;align-items:center;justify-content:center;color:var(--muted);">${ICONS.box2}</div>`}
+          ${productThumbHtml(p, 48)}
           <div style="flex:1;">
             <div style="font-weight:700;margin-bottom:2px;">${p.name}</div>
             <div class="muted" style="font-size:12.5px;">KDV hariç ₺${tl(p.price)} · <span style="color:var(--blue);font-weight:600;">KDV dahil ₺${tl(p.price*1.2)}</span></div>
@@ -1368,7 +2263,7 @@ function render(){
 
   else if(view==='accounts'){
     html += `<h1 class="page">Hesaplar</h1><p class="muted" style="margin-top:-2px;margin-bottom:14px;">Genel işletme gelir/gider takibi (kira, nakliye vb.). Müşteri borç/alacakları için Müşteriler sekmesine bakın.</p>`;
-    html += `<div class="fab-row"><button class="btn ghost" onclick="setView('suppliers')">📦 Tedarikçiler</button><button class="btn" onclick="modalLedger()">${ICONS.plus} Gider Ekle</button></div>`;
+    html += `<div class="fab-row"><button class="btn blue" onclick="setView('suppliers')">📦 Tedarikçiler</button><button class="btn" style="background:var(--green);" onclick="setView('employees')">👷 Çalışanlar</button><button class="btn" style="background:var(--brass);color:var(--navy);" onclick="setView('bankLoans')">🏦 Banka Kredileri</button><button class="btn" onclick="modalLedger()">${ICONS.plus} Gider Ekle</button></div>`;
     html += `<div class="grid3">${statCard('Satış Geliri', totalDeliveries, 'up', 'blue')}${statCard('Ek Gider', manualExpense, 'down', 'bordo', "modalExpenseBreakdown()")}${statCard('Net', netProfit, 'wallet', netProfit>=0?'green':'bordo')}</div>`;
     if(state.ledger.length===0){ html += `<div class="card"><div class="empty">Henüz elle eklenmiş bir kayıt yok.</div></div>`; }
     else {
@@ -1378,7 +2273,7 @@ function render(){
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px;">
             <div>
               <div class="date-strong">${fmtDate(l.date)}</div>
-              <span class="pill" style="background:${isIncome?'rgba(47,122,77,.15)':'rgba(123,45,62,.12)'};color:${isIncome?'var(--green)':'var(--rust)'};margin-top:4px;">${l.category}</span>
+              <span class="pill" style="background:${isIncome?'var(--green)':'var(--teal)'};color:#fff;font-weight:700;margin-top:4px;">${l.category}</span>
             </div>
             <div class="mono" style="font-size:17px;font-weight:700;color:${isIncome?'var(--green)':'var(--rust)'};">${isIncome?'+':'−'}₺${tl(l.amount)}</div>
           </div>
@@ -1393,7 +2288,7 @@ function render(){
   }
 
   else if(view==='suppliers'){
-    html += `<div class="fab-row" style="justify-content:space-between;"><button class="btn ghost" onclick="setView('accounts')">‹ Hesaplar</button><span></span></div>`;
+    html += `<div class="fab-row" style="justify-content:space-between;"><button class="btn" style="background:var(--teal);" onclick="setView('accounts')">‹‹ Hesaplar</button><span></span></div>`;
     html += `<h1 class="page">Tedarikçiler</h1><p class="muted" style="margin-top:-2px;margin-bottom:14px;">Mal aldığınız firmalara olan borcunuzu takip edin.</p>`;
     html += `<div class="fab-row"><button class="btn" onclick="modalSupplier()">${ICONS.plus} Tedarikçi Ekle</button></div>`;
     if(state.suppliers.length===0){ html += `<div class="card"><div class="empty">Henüz tedarikçi eklenmedi.</div></div>`; }
@@ -1403,8 +2298,9 @@ function render(){
         const bal = supplierBalance(s.id);
         const balColor = bal>0 ? 'var(--rust)' : (bal<0 ? 'var(--green)' : 'var(--muted)');
         const balLabel = bal>0 ? 'borcumuz var' : (bal<0 ? 'fazla ödemişiz' : 'hesap kapalı');
-        html += `<div class="row clickable" onclick="openSupplier('${s.id}')">
-          <div><div><strong>${s.name}</strong></div><div class="muted" style="font-size:11.5px;">${s.phone?telLink(s.phone):''}</div></div>
+        const supMoveCount = state.supplierMovements.filter(m=>m.supplierId===s.id).length;
+        html += `<div class="row clickable" style="border-left:5px solid var(--teal);padding-left:11px;" onclick="openSupplier('${s.id}')">
+          <div><div><strong>${s.name}</strong></div><div class="muted" style="font-size:11.5px;">${s.phone?telLink(s.phone):''}${supMoveCount?` · ${supMoveCount} hareket`:''}</div></div>
           <div style="text-align:right;"><div class="mono" style="color:${balColor};font-weight:700;">₺${tl(Math.abs(bal))}</div><div class="muted" style="font-size:10.5px;">${balLabel}</div></div>
         </div>`;
       });
@@ -1415,13 +2311,15 @@ function render(){
   else if(view==='supplierDetail'){
     const s = state.suppliers.find(x=>x.id===selectedSupplierId);
     if(!s){ view='suppliers'; return render(); }
+    const sms = state.supplierMovements.filter(m=>m.supplierId===s.id);
+    const totalGoods = sms.filter(m=>m.type==='borc').reduce((a,m)=>a+m.amount,0);
+    const totalPaidOut = sms.filter(m=>m.type==='odeme').reduce((a,m)=>a+m.amount,0);
     const bal = supplierBalance(s.id);
-    const balColor = bal>0 ? 'var(--rust)' : (bal<0 ? 'var(--green)' : 'var(--navy)');
-    const balLabel = bal>0 ? 'Onlara borcumuz' : (bal<0 ? 'Fazla ödemişiz' : 'Hesap kapalı');
-    html += `<div class="fab-row"><button class="btn ghost" onclick="modalSupplier('${s.id}')">${ICONS.edit} Tedarikçiyi Düzenle</button></div>`;
-    html += `<div class="card" style="padding:22px 18px;text-align:center;margin-bottom:14px;"><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.1em;">${balLabel}</div><div class="mono" style="font-size:32px;color:${balColor};">₺${tl(Math.abs(bal))}</div></div>`;
+    const balLabel = bal>0 ? 'Kalan Borç' : (bal<0 ? 'Fazla Ödemişiz' : 'Hesap Kapalı');
+    html += `<div class="fab-row"><button class="btn ghost" onclick="modalSupplier('${s.id}')">${ICONS.edit} Tedarikçiyi Düzenle</button><button class="btn blue" onclick="shareSupplierStatement('${s.id}')">📤 Hesap Özetini Gönder</button></div>`;
+    html += `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin-bottom:18px;">${heroStat('Toplam Mal Tutarı', totalGoods, 'blue', true)}${heroStat('Toplam Ödediğimiz', totalPaidOut, 'teal', true)}${heroStat(balLabel, Math.abs(bal), bal>0?'bordo':'teal', true)}</div>`;
     html += `<div class="fab-row">
-      <button class="btn dark" onclick="modalSupplierMovement('${s.id}','borc')">${ICONS.plus} Mal / Borç Ekle</button>
+      <button class="btn dark" onclick="modalSupplierMovement('${s.id}','borc')">${ICONS.plus} Mal Girişi Ekle</button>
       <button class="btn" onclick="modalSupplierMovement('${s.id}','odeme')">${ICONS.plus} Ödeme Yaptım</button>
     </div>`;
     const rows = supplierMovementsOf(s.id);
@@ -1440,6 +2338,136 @@ function render(){
           <div style="display:flex;gap:8px;justify-content:flex-end;border-top:1.5px solid var(--linefaint);padding-top:8px;">
             <button class="btn ghost" style="padding:8px 14px;font-size:13px;" onclick="editSupplierMovement('${m.id}','${s.id}')">${ICONS.edit} Düzenle</button>
             <button class="btn ghost" style="padding:8px 14px;font-size:13px;color:var(--rust);border-color:var(--rust);" onclick="removeSupplierMovement('${m.id}')">${ICONS.trash} Sil</button>
+          </div>
+        </div>`;
+      });
+    }
+  }
+
+  else if(view==='employees'){
+    html += `<div class="fab-row" style="justify-content:space-between;"><button class="btn" style="background:var(--teal);" onclick="setView('accounts')">‹‹ Hesaplar</button><span></span></div>`;
+    html += `<h1 class="page">Çalışanlar</h1><p class="muted" style="margin-top:-2px;margin-bottom:14px;">Maaş/hakediş ve ödemeleri takip edin.</p>`;
+    html += `<div class="fab-row"><button class="btn" onclick="modalEmployee()">${ICONS.plus} Çalışan Ekle</button></div>`;
+    if(state.employees.length===0){ html += `<div class="card"><div class="empty">Henüz çalışan eklenmedi.</div></div>`; }
+    else {
+      state.employees.forEach(e=>{
+        const bal = employeeBalance(e.id);
+        const balColor = bal>0 ? 'var(--rust)' : (bal<0 ? 'var(--green)' : 'var(--muted)');
+        const balLabel = bal>0 ? 'kalan ödeme' : (bal<0 ? 'fazla ödemişiz' : 'hesap kapalı');
+        const empMoveCount = state.employeeMovements.filter(m=>m.employeeId===e.id).length;
+        html += `<div class="row clickable" style="border-left:5px solid var(--teal);padding:14px 16px 14px 12px;background:rgba(47,111,107,.06);border-radius:6px;border-top:1.5px solid var(--line);border-right:1.5px solid var(--line);border-bottom:1.5px solid var(--line);margin-bottom:10px;" onclick="openEmployee('${e.id}')">
+          <div style="display:flex;align-items:center;gap:8px;"><span style="font-size:17px;">👤</span><div><div><strong>${e.name}</strong></div><div class="muted" style="font-size:11.5px;">${e.phone?telLink(e.phone):''} · İşe başlama: ${fmtDate(e.startDate)}${empMoveCount?` · ${empMoveCount} hareket`:''}</div></div></div>
+          <div style="text-align:right;"><div class="mono" style="color:${balColor};font-weight:700;">₺${tl(Math.abs(bal))}</div><div class="muted" style="font-size:10.5px;">${balLabel}</div></div>
+        </div>`;
+      });
+    }
+  }
+
+  else if(view==='employeeDetail'){
+    const e = state.employees.find(x=>x.id===selectedEmployeeId);
+    if(!e){ view='employees'; return render(); }
+    const autoAccrued = employeeAutoAccrued(e);
+    const manualHakedis = employeeManualHakedis(e.id);
+    const totalPaid = employeeTotalPaid(e.id);
+    const bal = employeeBalance(e.id);
+    const balLabel = bal>0 ? 'Kalan Alacağı' : (bal<0 ? 'Fazla Ödenen' : 'Hesap Kapalı');
+    html += `<div class="fab-row"><button class="btn ghost" onclick="modalEmployee('${e.id}')">${ICONS.edit} Çalışanı Düzenle</button><button class="btn blue" onclick="shareEmployeeStatement('${e.id}')">📤 Hesap Özetini Gönder</button></div>`;
+    html += `<div class="card" style="padding:9px 14px;margin-bottom:10px;border-left:5px solid var(--blue);"><div style="font-size:11px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;">İşe Başlama Tarihi</div><div style="font-size:14px;font-weight:700;color:var(--navy);">${fmtDate(e.startDate)}${e.monthlySalary?` <span class="muted" style="font-size:12px;font-weight:500;">· Aylık Maaş: <span style="color:var(--navy);font-weight:700;">₺${tl(e.monthlySalary)}</span></span>`:''}</div></div>`;
+    if(e.monthlySalary){
+      html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:7px;">${heroStat('Otomatik Aylık Hakediş', autoAccrued, 'blue')}${heroStat('Net Alınan İkramiye / Mesai', manualHakedis, 'blue')}</div>`;
+      html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:18px;">${heroStat('Toplam Ödenen', totalPaid, 'teal')}${heroStat(balLabel, Math.abs(bal), bal>0?'bordo':'bordo')}</div>`;
+    } else if(manualHakedis>0){
+      html += `<div class="grid3">${statCard(balLabel, Math.abs(bal), 'wallet', bal>0?'bordo':'bordo')}</div>`;
+    } else {
+      html += `<div class="grid3">${statCard('Toplam Ödenen', totalPaid, 'wallet', 'blue')}</div>`;
+    }
+    html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:18px;">
+      <button class="btn dark btn-compact" style="margin:0;" onclick="modalEmployeeMovement('${e.id}','borc')">${ICONS.plus} ${e.monthlySalary?'Ek Hakediş / Mesai Ekle':'Hakediş / Maaş Ekle'}</button>
+      <button class="btn btn-compact" style="margin:0;" onclick="modalEmployeeMovement('${e.id}','odeme')">${ICONS.plus} Ödeme Yaptım</button>
+    </div>`;
+    html += renderAttendanceCalendar(e);
+    const rows = employeeMovementsOf(e.id);
+    let erunning = 0;
+    const eWithRunning = rows.map(m=>{ erunning += m.type==='borc' ? m.amount : -m.amount; return {...m, running:erunning}; });
+    if(eWithRunning.length===0){ html += `<div class="card"><div class="empty">Henüz hareket yok.</div></div>`; }
+    else {
+      eWithRunning.slice().reverse().forEach(m=>{
+        const isBorc = m.type==='borc';
+        const isKesinti = m.type==='kesinti';
+        const amtColor = (isBorc||isKesinti) ? 'var(--rust)' : 'var(--green)';
+        html += `<div class="card" style="padding:14px 16px;margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px;">
+            <div class="date-strong">${fmtDate(m.date)}</div>
+            <div style="text-align:right;"><div class="mono" style="font-size:17px;font-weight:700;color:${amtColor};">${isBorc?'+':'−'}₺${tl(m.amount)}</div><div class="muted" style="font-size:11px;">Bakiye: ₺${tl(m.running)}</div></div>
+          </div>
+          <div style="font-size:14px;margin-bottom:8px;">${m.desc}</div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;border-top:1.5px solid var(--linefaint);padding-top:8px;">
+            <button class="btn ghost" style="padding:8px 14px;font-size:13px;" onclick="editEmployeeMovement('${m.id}','${e.id}')">${ICONS.edit} Düzenle</button>
+            <button class="btn ghost" style="padding:8px 14px;font-size:13px;color:var(--rust);border-color:var(--rust);" onclick="removeEmployeeMovement('${m.id}')">${ICONS.trash} Sil</button>
+          </div>
+        </div>`;
+      });
+    }
+    html += `<div class="card" style="padding:16px;">
+      <h2 class="serif" style="font-size:16px;margin:0 0 10px;">Notlar</h2>
+      ${e.note ? `<div class="muted" style="font-size:13.5px;max-height:44px;overflow:hidden;line-height:1.5;">${e.note}</div>` : `<p class="muted" style="margin:0;">Henüz not eklenmedi.</p>`}
+      <div style="display:flex; align-items:center; gap:10px; margin-top:10px;">
+        <button class="btn dark" onclick="modalEmployeeNote('${e.id}')">${e.note?'Notu Aç / Düzenle':'Not Ekle'}</button>
+      </div>
+    </div>`;
+  }
+
+  else if(view==='bankLoans'){
+    html += `<div class="fab-row" style="justify-content:space-between;"><button class="btn" style="background:var(--teal);" onclick="setView('accounts')">‹‹ Hesaplar</button><span></span></div>`;
+    html += `<h1 class="page">Banka Kredileri</h1>`;
+    html += `<div class="banner" style="background:#fdf6e3;border:1.5px solid var(--brass);color:var(--navy);padding:12px 14px;border-radius:6px;font-size:12.5px;margin-bottom:14px;">ℹ️ Bu sayfa sadece banka kredilerinizi/borçlarınızı takip etmek içindir. Buradaki tutarlar Net Ciro, Net Gider, Net Kâr veya diğer hiçbir hesaba dahil edilmez — tamamen bağımsız, sadece bilgi amaçlı bir kayıttır.</div>`;
+    const totalBankDebt = state.bankLoans.reduce((a,b)=>a+bankLoanBalance(b.id),0);
+    html += `<div class="grid3">${heroStat('Toplam Banka Borcu', Math.abs(totalBankDebt), totalBankDebt>0?'bordo':'teal')}</div>`;
+    html += `<div class="fab-row"><button class="btn" style="background:var(--brass);color:var(--navy);" onclick="modalBankLoan()">${ICONS.plus} Banka/Kredi Ekle</button></div>`;
+    if(state.bankLoans.length===0){ html += `<div class="card"><div class="empty">Henüz banka/kredi eklenmedi.</div></div>`; }
+    else {
+      html += `<div class="card">`;
+      state.bankLoans.forEach(b=>{
+        const bal = bankLoanBalance(b.id);
+        const balColor = bal>0 ? 'var(--rust)' : (bal<0 ? 'var(--green)' : 'var(--muted)');
+        const balLabel = bal>0 ? 'kalan borç' : (bal<0 ? 'fazla ödemişiz' : 'hesap kapalı');
+        html += `<div class="row clickable" onclick="openBankLoan('${b.id}')">
+          <div><strong>${b.name}</strong></div>
+          <div style="text-align:right;"><div class="mono" style="color:${balColor};font-weight:700;">₺${tl(Math.abs(bal))}</div><div class="muted" style="font-size:10.5px;">${balLabel}</div></div>
+        </div>`;
+      });
+      html += `</div>`;
+    }
+  }
+
+  else if(view==='bankLoanDetail'){
+    const b = state.bankLoans.find(x=>x.id===selectedBankLoanId);
+    if(!b){ view='bankLoans'; return render(); }
+    const bal = bankLoanBalance(b.id);
+    const balLabel = bal>0 ? 'Kalan Borç' : (bal<0 ? 'Fazla Ödemişiz' : 'Hesap Kapalı');
+    html += `<div class="banner" style="background:#fdf6e3;border:1.5px solid var(--brass);color:var(--navy);padding:10px 14px;border-radius:6px;font-size:12px;margin-bottom:14px;">ℹ️ Bu, diğer hesaplarınızdan bağımsız bir kayıttır.</div>`;
+    html += `<div class="fab-row"><button class="btn ghost" onclick="modalBankLoan('${b.id}')">${ICONS.edit} Düzenle</button></div>`;
+    html += `<div class="grid3">${statCard(balLabel, Math.abs(bal), 'wallet', bal>0?'bordo':'green')}</div>`;
+    html += `<div class="fab-row">
+      <button class="btn dark" onclick="modalBankLoanMovement('${b.id}','borc')">${ICONS.plus} Kredi/Borç Ekle</button>
+      <button class="btn" onclick="modalBankLoanMovement('${b.id}','odeme')">${ICONS.plus} Ödeme Yaptım</button>
+    </div>`;
+    const rows = bankLoanMovementsOf(b.id);
+    let brunning = 0;
+    const bWithRunning = rows.map(m=>{ brunning += m.type==='borc' ? m.amount : -m.amount; return {...m, running:brunning}; });
+    if(bWithRunning.length===0){ html += `<div class="card"><div class="empty">Henüz hareket yok.</div></div>`; }
+    else {
+      bWithRunning.slice().reverse().forEach(m=>{
+        const isBorc = m.type==='borc';
+        html += `<div class="card" style="padding:14px 16px;margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px;">
+            <div class="date-strong">${fmtDate(m.date)}</div>
+            <div style="text-align:right;"><div class="mono" style="font-size:17px;font-weight:700;color:${isBorc?'var(--rust)':'var(--green)'};">${isBorc?'+':'−'}₺${tl(m.amount)}</div><div class="muted" style="font-size:11px;">Bakiye: ₺${tl(m.running)}</div></div>
+          </div>
+          <div style="font-size:14px;margin-bottom:8px;">${m.desc}</div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;border-top:1.5px solid var(--linefaint);padding-top:8px;">
+            <button class="btn ghost" style="padding:8px 14px;font-size:13px;" onclick="editBankLoanMovement('${m.id}','${b.id}')">${ICONS.edit} Düzenle</button>
+            <button class="btn ghost" style="padding:8px 14px;font-size:13px;color:var(--rust);border-color:var(--rust);" onclick="removeBankLoanMovement('${m.id}')">${ICONS.trash} Sil</button>
           </div>
         </div>`;
       });
@@ -1483,7 +2511,7 @@ function render(){
 
   app.innerHTML = html;
   const nav = document.getElementById('bottomnav');
-  const activeNav = view==='customerDetail' ? 'customers' : (view==='suppliers'||view==='supplierDetail') ? 'accounts' : view;
+  const activeNav = view==='customerDetail' ? 'customers' : (view==='suppliers'||view==='supplierDetail'||view==='employees'||view==='employeeDetail'||view==='bankLoans'||view==='bankLoanDetail') ? 'accounts' : view;
   nav.innerHTML = NAV.map(n=>`<button class="${activeNav===n.id?'active':''}" onclick="setView('${n.id}')">${ICONS[n.icon]}<span>${n.label}</span></button>`).join('');
 }
 

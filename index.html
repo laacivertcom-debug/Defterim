@@ -231,6 +231,9 @@ let state = loadState();
 migrateCustomerIdsToUUID();
 migrateProductIdsToUUID();
 migrateMovementIdsToUUID();
+migrateSupplierIdsToUUID();
+migrateEmployeeIdsToUUID();
+migrateLedgerIdsToUUID();
 let view = 'dashboard';
 let selectedCustomerId = null;
 let selectedSupplierId = null;
@@ -483,7 +486,7 @@ function supplierBalance(id){
   const odendi = ms.filter(m=>m.type==='odeme').reduce((a,m)=>a+m.amount,0);
   return borc-odendi;
 }
-function addSupplier(name, phone){ const s={id:uid(), name, phone, note:''}; state.suppliers.push(s); persist(); return s; }
+function addSupplier(name, phone){ const s={id:uid(), name, phone, note:''}; state.suppliers.push(s); persist(); sbUpsertSupplier(s); return s; }
 function removeSupplier(id){
   const s = state.suppliers.find(x=>x.id===id); if(!s) return;
   requirePin(()=>{
@@ -491,7 +494,7 @@ function removeSupplier(id){
     trashAdd('supplier', {supplier:s, movements:ms});
     state.suppliers = state.suppliers.filter(x=>x.id!==id);
     state.supplierMovements = state.supplierMovements.filter(m=>m.supplierId!==id);
-    persist(); render();
+    persist(); sbDeleteSupplier(id); render();
   });
 }
 let editingSupplierId = null;
@@ -515,7 +518,7 @@ function submitSupplierModal(){
   const name = document.getElementById('f-sname').value.trim();
   const phone = document.getElementById('f-sphone').value.trim();
   if(!name) return;
-  if(editingSupplierId){ const s=state.suppliers.find(x=>x.id===editingSupplierId); if(s){ s.name=name; s.phone=phone; } }
+  if(editingSupplierId){ const s=state.suppliers.find(x=>x.id===editingSupplierId); if(s){ s.name=name; s.phone=phone; sbUpsertSupplier(s); } }
   else { addSupplier(name, phone); }
   editingSupplierId = null;
   persist(); closeModal(); render();
@@ -541,8 +544,9 @@ function submitSupplierMovement(supplierId, type){
   const desc = document.getElementById('f-sdesc').value.trim() || (type==='borc'?'Mal Alımı':'Ödeme');
   const amount = parseAmount(document.getElementById('f-samount').value);
   if(!amount || amount<=0) return;
-  state.supplierMovements.push({id:uid(), supplierId, date, type, desc, amount});
-  persist(); closeModal(); render();
+  const sm = {id:uid(), supplierId, date, type, desc, amount};
+  state.supplierMovements.push(sm);
+  persist(); sbUpsertSupplierMovement(sm); closeModal(); render();
 }
 function editSupplierMovement(id, supplierId){
   const m = state.supplierMovements.find(x=>x.id===id); if(!m) return;
@@ -566,14 +570,14 @@ function submitSupplierMovementEdit(id){
   m.date = document.getElementById('f-sdate').value || m.date;
   m.desc = document.getElementById('f-sdesc').value.trim() || m.desc;
   m.amount = parseAmount(document.getElementById('f-samount').value);
-  persist(); closeModal(); render();
+  persist(); sbUpsertSupplierMovement(m); closeModal(); render();
 }
 function removeSupplierMovement(id){
   const m = state.supplierMovements.find(x=>x.id===id); if(!m) return;
   requirePin(()=>{
     trashAdd('supplierMovement', m);
     state.supplierMovements = state.supplierMovements.filter(x=>x.id!==id);
-    persist(); render();
+    persist(); sbDeleteSupplierMovement(id); render();
   });
 }
 function openSupplier(id){ view='supplierDetail'; selectedSupplierId=id; render(); }
@@ -742,7 +746,7 @@ function employeeBalance(id){
   const devamsizlik = employeeAttendanceDeduction(e);
   return auto + manualHakedis - odendi - kesinti - devamsizlik;
 }
-function addEmployee(name, phone, startDate, monthlySalary){ const e={id:uid(), name, phone, startDate, monthlySalary:monthlySalary||0, attendance:{}, note:''}; state.employees.push(e); persist(); return e; }
+function addEmployee(name, phone, startDate, monthlySalary){ const e={id:uid(), name, phone, startDate, monthlySalary:monthlySalary||0, attendance:{}, note:''}; state.employees.push(e); persist(); sbUpsertEmployee(e); return e; }
 function removeEmployee(id){
   const e = state.employees.find(x=>x.id===id); if(!e) return;
   requirePin(()=>{
@@ -750,7 +754,7 @@ function removeEmployee(id){
     trashAdd('employee', {employee:e, movements:ms});
     state.employees = state.employees.filter(x=>x.id!==id);
     state.employeeMovements = state.employeeMovements.filter(m=>m.employeeId!==id);
-    persist(); closeModal(); render();
+    persist(); sbDeleteEmployee(id); closeModal(); render();
   });
 }
 let editingEmployeeId = null;
@@ -778,7 +782,7 @@ function submitEmployeeModal(){
   const startDate = document.getElementById('f-estart').value || today();
   const monthlySalary = parseAmount(document.getElementById('f-esalary').value);
   if(!name) return;
-  if(editingEmployeeId){ const e=state.employees.find(x=>x.id===editingEmployeeId); if(e){ e.name=name; e.phone=phone; e.startDate=startDate; e.monthlySalary=monthlySalary; } }
+  if(editingEmployeeId){ const e=state.employees.find(x=>x.id===editingEmployeeId); if(e){ e.name=name; e.phone=phone; e.startDate=startDate; e.monthlySalary=monthlySalary; sbUpsertEmployee(e); } }
   else { addEmployee(name, phone, startDate, monthlySalary); }
   editingEmployeeId = null;
   persist(); closeModal(); render();
@@ -805,8 +809,9 @@ function submitEmployeeMovement(employeeId, type){
   const desc = document.getElementById('f-edesc').value.trim() || (type==='borc'?'Hakediş':'Ödeme');
   const amount = parseAmount(document.getElementById('f-eamount').value);
   if(!amount || amount<=0) return;
-  state.employeeMovements.push({id:uid(), employeeId, date, type, desc, amount});
-  persist(); closeModal(); render();
+  const em = {id:uid(), employeeId, date, type, desc, amount};
+  state.employeeMovements.push(em);
+  persist(); sbUpsertEmployeeMovement(em); closeModal(); render();
 }
 function employeeAbsentDaysCount(e){
   return Object.keys(e.attendance||{}).filter(d=>e.attendance[d]).length;
@@ -816,7 +821,7 @@ function toggleAttendanceDay(employeeId, dateStr){
     const e = state.employees.find(x=>x.id===employeeId); if(!e) return;
     e.attendance = e.attendance || {};
     if(e.attendance[dateStr]) delete e.attendance[dateStr]; else e.attendance[dateStr] = true;
-    persist(); render();
+    persist(); sbUpsertEmployee(e); render();
   });
 }
 function renderAttendanceCalendar(e){
@@ -864,14 +869,14 @@ function submitEmployeeMovementEdit(id){
   m.date = document.getElementById('f-edate').value || m.date;
   m.desc = document.getElementById('f-edesc').value.trim() || m.desc;
   m.amount = parseAmount(document.getElementById('f-eamount').value);
-  persist(); closeModal(); render();
+  persist(); sbUpsertEmployeeMovement(m); closeModal(); render();
 }
 function removeEmployeeMovement(id){
   const m = state.employeeMovements.find(x=>x.id===id); if(!m) return;
   requirePin(()=>{
     trashAdd('employeeMovement', m);
     state.employeeMovements = state.employeeMovements.filter(x=>x.id!==id);
-    persist(); closeModal(); render();
+    persist(); sbDeleteEmployeeMovement(id); closeModal(); render();
   });
 }
 function shareEmployeeStatement(id){
@@ -1131,9 +1136,148 @@ async function sbDeleteMovement(id){
   try{ const { error } = await sb.from('hareketler').delete().eq('id', id); if(error) console.error('Bulut silme hatası (hareketler):', error.message); }
   catch(err){ console.error('Bulut bağlantı hatası:', err); }
 }
+
+// ==== TEDARİKÇİLER ====
+function migrateSupplierIdsToUUID(){
+  let changed = false;
+  state.suppliers.forEach(s=>{
+    if(!isValidUUID(s.id)){
+      const oldId = s.id; const newId = uid(); s.id = newId; changed = true;
+      state.supplierMovements.forEach(m=>{ if(m.supplierId===oldId) m.supplierId=newId; });
+    }
+  });
+  state.supplierMovements.forEach(m=>{ if(!isValidUUID(m.id)){ m.id = uid(); changed = true; } });
+  if(changed) persist();
+}
+function jsSupplierToRow(s){
+  return { id:s.id, firma_id:FIRMA_ID, ad:s.name, telefon:s.phone||null, note:s.note||null };
+}
+async function sbUpsertSupplier(s){
+  if(!sb) return;
+  try{ const { error } = await sb.from('tedarikciler').upsert(jsSupplierToRow(s)); if(error) console.error('Bulut kaydı hatası (tedarikciler):', error.message); }
+  catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+async function sbDeleteSupplier(id){
+  if(!sb) return;
+  try{ const { error } = await sb.from('tedarikciler').delete().eq('id', id); if(error) console.error('Bulut silme hatası (tedarikciler):', error.message); }
+  catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+function jsSupplierMovementToRow(m){
+  return { id:m.id, firma_id:FIRMA_ID, tedarikci_id:m.supplierId, tarih:m.date, tur:m.type, aciklama:m.desc||null, tutar:m.amount };
+}
+async function sbUpsertSupplierMovement(m){
+  if(!sb) return;
+  try{ const { error } = await sb.from('tedarikci_hareketleri').upsert(jsSupplierMovementToRow(m)); if(error) console.error('Bulut kaydı hatası (tedarikci_hareketleri):', error.message); }
+  catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+async function sbDeleteSupplierMovement(id){
+  if(!sb) return;
+  try{ const { error } = await sb.from('tedarikci_hareketleri').delete().eq('id', id); if(error) console.error('Bulut silme hatası (tedarikci_hareketleri):', error.message); }
+  catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+async function uploadAllSuppliersToCloud(){
+  if(!sb){ alert('Bulut bağlantısı kurulamadı.'); return; }
+  if(state.suppliers.length===0){ alert('Yüklenecek tedarikçi yok.'); return; }
+  const rows = state.suppliers.map(jsSupplierToRow);
+  const { error } = await sb.from('tedarikciler').upsert(rows);
+  if(error){ alert('❌ Yükleme başarısız: ' + error.message); return; }
+  const mRows = state.supplierMovements.map(jsSupplierMovementToRow);
+  if(mRows.length>0){
+    const { error: mErr } = await sb.from('tedarikci_hareketleri').upsert(mRows);
+    if(mErr){ alert('❌ Tedarikçi hareketleri yüklenemedi: ' + mErr.message); return; }
+  }
+  alert(`✅ ${rows.length} tedarikçi ve ${mRows.length} hareket buluta yüklendi.`);
+}
+
+// ==== ÇALIŞANLAR ====
+function migrateEmployeeIdsToUUID(){
+  let changed = false;
+  state.employees.forEach(e=>{
+    if(!isValidUUID(e.id)){
+      const oldId = e.id; const newId = uid(); e.id = newId; changed = true;
+      state.employeeMovements.forEach(m=>{ if(m.employeeId===oldId) m.employeeId=newId; });
+    }
+  });
+  state.employeeMovements.forEach(m=>{ if(!isValidUUID(m.id)){ m.id = uid(); changed = true; } });
+  if(changed) persist();
+}
+function jsEmployeeToRow(e){
+  return { id:e.id, firma_id:FIRMA_ID, ad:e.name, telefon:e.phone||null, ise_baslama_tarihi:e.startDate||null, aylik_maas:e.monthlySalary||0, devamsizlik:e.attendance||{}, note:e.note||null };
+}
+async function sbUpsertEmployee(e){
+  if(!sb) return;
+  try{ const { error } = await sb.from('calisanlar').upsert(jsEmployeeToRow(e)); if(error) console.error('Bulut kaydı hatası (calisanlar):', error.message); }
+  catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+async function sbDeleteEmployee(id){
+  if(!sb) return;
+  try{ const { error } = await sb.from('calisanlar').delete().eq('id', id); if(error) console.error('Bulut silme hatası (calisanlar):', error.message); }
+  catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+function jsEmployeeMovementToRow(m){
+  return { id:m.id, firma_id:FIRMA_ID, calisan_id:m.employeeId, tarih:m.date, tur:m.type, aciklama:m.desc||null, tutar:m.amount };
+}
+async function sbUpsertEmployeeMovement(m){
+  if(!sb) return;
+  try{ const { error } = await sb.from('calisan_hareketleri').upsert(jsEmployeeMovementToRow(m)); if(error) console.error('Bulut kaydı hatası (calisan_hareketleri):', error.message); }
+  catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+async function sbDeleteEmployeeMovement(id){
+  if(!sb) return;
+  try{ const { error } = await sb.from('calisan_hareketleri').delete().eq('id', id); if(error) console.error('Bulut silme hatası (calisan_hareketleri):', error.message); }
+  catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+async function uploadAllEmployeesToCloud(){
+  if(!sb){ alert('Bulut bağlantısı kurulamadı.'); return; }
+  if(state.employees.length===0){ alert('Yüklenecek çalışan yok.'); return; }
+  const rows = state.employees.map(jsEmployeeToRow);
+  const { error } = await sb.from('calisanlar').upsert(rows);
+  if(error){ alert('❌ Yükleme başarısız: ' + error.message); return; }
+  const mRows = state.employeeMovements.map(jsEmployeeMovementToRow);
+  if(mRows.length>0){
+    const { error: mErr } = await sb.from('calisan_hareketleri').upsert(mRows);
+    if(mErr){ alert('❌ Çalışan hareketleri yüklenemedi: ' + mErr.message); return; }
+  }
+  alert(`✅ ${rows.length} çalışan ve ${mRows.length} hareket buluta yüklendi.`);
+}
+
+// ==== GİDERLER / GELİRLER (elle eklenen kayıtlar) ====
+function migrateLedgerIdsToUUID(){
+  let changed = false;
+  state.ledger.forEach(l=>{ if(!isValidUUID(l.id)){ l.id = uid(); changed = true; } });
+  if(changed) persist();
+}
+function jsLedgerToRow(l){
+  return { id:l.id, firma_id:FIRMA_ID, tarih:l.date, tur:l.type, kategori:l.category||null, aciklama:l.desc||null, taban_tutar:l.baseAmount!=null?l.baseAmount:l.amount, kdv_dahil:!!l.kdvOn, kdv_orani:l.kdvPct||0, tutar:l.amount };
+}
+async function sbUpsertLedger(l){
+  if(!sb) return;
+  try{ const { error } = await sb.from('giderler').upsert(jsLedgerToRow(l)); if(error) console.error('Bulut kaydı hatası (giderler):', error.message); }
+  catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+async function sbDeleteLedger(id){
+  if(!sb) return;
+  try{ const { error } = await sb.from('giderler').delete().eq('id', id); if(error) console.error('Bulut silme hatası (giderler):', error.message); }
+  catch(err){ console.error('Bulut bağlantı hatası:', err); }
+}
+async function uploadAllLedgerToCloud(){
+  if(!sb){ alert('Bulut bağlantısı kurulamadı.'); return; }
+  if(state.ledger.length===0){ alert('Yüklenecek kayıt yok.'); return; }
+  const rows = state.ledger.map(jsLedgerToRow);
+  const { error } = await sb.from('giderler').upsert(rows);
+  if(error){ alert('❌ Yükleme başarısız: ' + error.message); }
+  else{ alert(`✅ ${rows.length} kayıt buluta yüklendi.`); }
+}
 async function uploadAllMovementsToCloud(){
   if(!sb){ alert('Bulut bağlantısı kurulamadı.'); return; }
   if(state.movements.length===0){ alert('Yüklenecek hareket yok.'); return; }
+  // Önce tüm müşterileri buluta senkronize et, böylece hareketlerin bağlı olduğu
+  // müşteri kaydı buluttan eksik olduğu için foreign key hatası alınmasın.
+  if(state.customers.length>0){
+    const custRows = state.customers.map(jsCustomerToRow);
+    const { error: custErr } = await sb.from('musteriler').upsert(custRows);
+    if(custErr){ alert('❌ Müşteriler ön-senkronizasyonu başarısız: ' + custErr.message); return; }
+  }
   const customerIds = new Set(state.customers.map(c=>c.id));
   const valid = state.movements.filter(m=>customerIds.has(m.customerId));
   const invalid = state.movements.filter(m=>!customerIds.has(m.customerId));
@@ -1556,7 +1700,7 @@ function submitProduct(){
 // ---------- ledger actions ----------
 function removeLedger(id){
   const l = state.ledger.find(x=>x.id===id); if(!l) return;
-  requirePin(()=>{ trashAdd('ledger', l); state.ledger = state.ledger.filter(l=>l.id!==id); persist(); render(); });
+  requirePin(()=>{ trashAdd('ledger', l); state.ledger = state.ledger.filter(l=>l.id!==id); persist(); sbDeleteLedger(id); render(); });
 }
 const EXPENSE_CATEGORIES = ['Nakliye / Dağıtım','Forklift / Depo','Yakıt / Araç Masrafı','Kira / Fatura','Diğer'];
 let ledgerType = 'gider';
@@ -1619,8 +1763,8 @@ function submitLedger(){
   const amount = round2(kdvOn ? base*(1+kdvPct/100) : base);
   if(editingLedgerId){
     const l = state.ledger.find(x=>x.id===editingLedgerId);
-    if(l){ l.type=ledgerType; l.category=category; l.desc=desc; l.baseAmount=base; l.kdvOn=kdvOn; l.kdvPct=kdvPct; l.amount=amount; }
-  } else { state.ledger.unshift({id:uid(), date:today(), type:ledgerType, category, desc, baseAmount:base, kdvOn, kdvPct, amount}); }
+    if(l){ l.type=ledgerType; l.category=category; l.desc=desc; l.baseAmount=base; l.kdvOn=kdvOn; l.kdvPct=kdvPct; l.amount=amount; sbUpsertLedger(l); }
+  } else { const nl={id:uid(), date:today(), type:ledgerType, category, desc, baseAmount:base, kdvOn, kdvPct, amount}; state.ledger.unshift(nl); sbUpsertLedger(nl); }
   editingLedgerId = null;
   persist(); closeModal(); render();
 }
@@ -2354,6 +2498,7 @@ function render(){
     html += `<h1 class="page">Hesaplar</h1><p class="muted" style="margin-top:-2px;margin-bottom:14px;">Genel işletme gelir/gider takibi (kira, nakliye vb.). Müşteri borç/alacakları için Müşteriler sekmesine bakın.</p>`;
     html += `<div class="fab-row"><button class="btn blue" onclick="setView('suppliers')">📦 Tedarikçiler</button><button class="btn" style="background:var(--green);" onclick="setView('employees')">👷 Çalışanlar</button><button class="btn" style="background:var(--brass);color:var(--navy);" onclick="setView('bankLoans')">🏦 Banka Kredileri</button><button class="btn" onclick="modalLedger()">${ICONS.plus} Gider Ekle</button></div>`;
     html += `<div class="grid3">${statCard('Satış Geliri', totalDeliveries, 'up', 'blue')}${statCard('Ek Gider', manualExpense, 'down', 'bordo', "modalExpenseBreakdown()")}${statCard('Net', netProfit, 'wallet', netProfit>=0?'green':'bordo')}</div>`;
+    html += `<button class="btn ghost btn-full" style="margin-bottom:18px;" onclick="uploadAllLedgerToCloud()">☁️ Gider/Gelir Kayıtlarını Buluta Yükle</button>`;
     if(state.ledger.length===0){ html += `<div class="card"><div class="empty">Henüz elle eklenmiş bir kayıt yok.</div></div>`; }
     else {
       state.ledger.forEach(l=>{
@@ -2380,6 +2525,7 @@ function render(){
     html += `<div class="fab-row" style="justify-content:space-between;"><button class="btn" style="background:var(--teal);" onclick="setView('accounts')">‹‹ Hesaplar</button><span></span></div>`;
     html += `<h1 class="page">Tedarikçiler</h1><p class="muted" style="margin-top:-2px;margin-bottom:14px;">Mal aldığınız firmalara olan borcunuzu takip edin.</p>`;
     html += `<div class="fab-row"><button class="btn" onclick="modalSupplier()">${ICONS.plus} Tedarikçi Ekle</button></div>`;
+    html += `<button class="btn ghost btn-full" style="margin-bottom:18px;" onclick="uploadAllSuppliersToCloud()">☁️ Buluta Yükle</button>`;
     if(state.suppliers.length===0){ html += `<div class="card"><div class="empty">Henüz tedarikçi eklenmedi.</div></div>`; }
     else {
       html += `<div class="card">`;
@@ -2437,6 +2583,7 @@ function render(){
     html += `<div class="fab-row" style="justify-content:space-between;"><button class="btn" style="background:var(--teal);" onclick="setView('accounts')">‹‹ Hesaplar</button><span></span></div>`;
     html += `<h1 class="page">Çalışanlar</h1><p class="muted" style="margin-top:-2px;margin-bottom:14px;">Maaş/hakediş ve ödemeleri takip edin.</p>`;
     html += `<div class="fab-row"><button class="btn" onclick="modalEmployee()">${ICONS.plus} Çalışan Ekle</button></div>`;
+    html += `<button class="btn ghost btn-full" style="margin-bottom:18px;" onclick="uploadAllEmployeesToCloud()">☁️ Buluta Yükle</button>`;
     if(state.employees.length===0){ html += `<div class="card"><div class="empty">Henüz çalışan eklenmedi.</div></div>`; }
     else {
       state.employees.forEach(e=>{

@@ -360,21 +360,39 @@ async function loadOrderPageData(force){
       sb.from('musteriler').select('id,ad,telefon,adres,vergi_no,vergi_dairesi').eq('firma_id', FIRMA_ID),
       sb.from('siparisler').select('*').eq('firma_id', FIRMA_ID).order('created_at',{ascending:false})
     ]);
-    orderProductsCache = urunler||[];
+    orderProductsCache = (urunler||[]).map(r=>({ id:r.id, name:r.ad, shortLabel:r.kisa_etiket, price:r.fiyat, image:r.image, category:r.kategori }));
     orderCustomersCache = musteriler||[];
     ordersCache = siparisler||[];
   }catch(e){ console.error('Sipariş verisi yüklenemedi:', e); orderProductsCache = orderProductsCache||[]; orderCustomersCache = orderCustomersCache||[]; ordersCache = ordersCache||[]; }
   orderLoading = false;
   render();
 }
-function addOrderLine(){ orderFormItems.push({productId:'', name:'', qty:1, price:0}); render(); }
+function addOrderLine(){ orderFormItems.push({productId:'', name:'', image:null, shortLabel:null, qty:1, price:0}); render(); }
 function removeOrderLine(idx){ orderFormItems.splice(idx,1); render(); }
-function updateOrderLineProduct(idx, productId){
+function openOrderProductPicker(idx){
+  const cards = (orderProductsCache||[]).map(p=>`
+    <div class="product-pick" onclick="selectOrderProduct(${idx},'${p.id}')">
+      ${productThumbHtml(p, 40)}
+      <div style="text-align:left;flex:1;"><strong>${p.name}</strong><div class="muted" style="font-size:11.5px;">₺${tl(p.price)}</div></div>
+    </div>`).join('');
+  openModal(`
+    <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-head"><h3>Ürün Seç</h3><button onclick="closeModal()">&times;</button></div>
+        <div class="modal-body">
+          ${(orderProductsCache&&orderProductsCache.length)? cards : '<div class="empty">Ürün kataloğunda kayıt yok. Önce Patron\'un Ürünler sayfasından ürün eklemesi ve "☁️ Buluta Yükle" demesi gerekiyor.</div>'}
+        </div>
+      </div>
+    </div>`);
+}
+function selectOrderProduct(idx, productId){
   const p = (orderProductsCache||[]).find(x=>x.id===productId);
   orderFormItems[idx].productId = productId;
-  orderFormItems[idx].name = p ? p.ad : '';
-  orderFormItems[idx].price = p ? (p.fiyat||0) : 0;
-  render();
+  orderFormItems[idx].name = p ? p.name : '';
+  orderFormItems[idx].image = p ? p.image : null;
+  orderFormItems[idx].shortLabel = p ? p.shortLabel : null;
+  orderFormItems[idx].price = p ? (p.price||0) : 0;
+  closeModal(); render();
 }
 function updateOrderLineQty(idx, val){ orderFormItems[idx].qty = parseAmount(val)||0; }
 function setOrderFormMode(mode){ orderFormMode = mode; render(); }
@@ -4293,11 +4311,11 @@ function render(){
       html += `<div class="card" style="padding:16px;margin-bottom:14px;"><h2 class="serif" style="font-size:15px;margin:0 0 10px;">Ürünler</h2>`;
       orderFormItems.forEach((it,idx)=>{
         html += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">
-          <select style="flex:2;border:1.5px solid var(--line);border-radius:5px;padding:9px;font-size:13.5px;" onchange="updateOrderLineProduct(${idx}, this.value)">
-            <option value="">Ürün seçin…</option>
-            ${orderProductsCache.map(p=>`<option value="${p.id}" ${it.productId===p.id?'selected':''}>${p.ad}</option>`).join('')}
-          </select>
-          <input type="number" min="1" value="${it.qty}" style="width:64px;border:1.5px solid var(--line);border-radius:5px;padding:9px;font-size:13.5px;" oninput="updateOrderLineQty(${idx}, this.value)">
+          <button class="product-pick" style="flex:1;margin:0;" onclick="openOrderProductPicker(${idx})">
+            ${it.productId ? productThumbHtml({image:it.image, shortLabel:it.shortLabel}, 36) : `<div class="ph">${ICONS.box2}</div>`}
+            <div style="text-align:left;flex:1;"><strong>${it.name||'Ürün Seç'}</strong>${it.productId?`<div class="muted" style="font-size:11px;">₺${tl(it.price)}</div>`:''}</div>
+          </button>
+          <input type="number" min="1" value="${it.qty}" style="width:60px;border:1.5px solid var(--line);border-radius:5px;padding:9px 6px;font-size:13.5px;" oninput="updateOrderLineQty(${idx}, this.value)">
           <button class="line-remove" style="background:none;border:none;color:var(--rust);font-size:20px;cursor:pointer;" onclick="removeOrderLine(${idx})">×</button>
         </div>`;
       });
